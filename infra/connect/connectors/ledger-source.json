@@ -1,0 +1,30 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "tasks.max": "1",
+
+  "database.hostname": "${env:PG_HOST}",
+  "database.port": "${env:PG_PORT}",
+  "database.dbname": "${env:PG_DATABASE}",
+  "database.user": "${env:PG_CDC_USER}",
+  "database.password": "${env:PG_CDC_PASSWORD}",
+
+  "topic.prefix": "ledger",
+  "plugin.name": "pgoutput",
+  "publication.name": "dbz_ledger",
+  "publication.autocreate.mode": "disabled",
+  "slot.name": "dbz_ledger",
+  "schema.include.list": "app",
+  "table.include.list": "app.assets,app.accounts,app.ledger_entries,app.cdc_heartbeat",
+  "snapshot.mode": "initial",
+
+  "decimal.handling.mode": "precise",
+  "tombstones.on.delete": "false",
+
+  "heartbeat.interval.ms": "${env:CDC_HEARTBEAT_INTERVAL_MS}",
+  "heartbeat.action.query": "INSERT INTO app.cdc_heartbeat (id, ts) VALUES (1, now()) ON CONFLICT (id) DO UPDATE SET ts = EXCLUDED.ts",
+
+  "topic.creation.default.replication.factor": "1",
+  "topic.creation.default.partitions": "1",
+  "topic.creation.default.cleanup.policy": "delete",
+  "topic.creation.default.retention.ms": "604800000"
+}

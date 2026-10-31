@@ -57,6 +57,22 @@ equivalent, breaking local/AWS parity.
 
 ## Confirmation
 
-`GET /connector-plugins` lists `org.apache.iceberg.connect.IcebergSinkConnector`;
-milestone (b) shows events in `bronze` tables with no duplicates after a Connect
-restart (count of `(pk, _lsn)` = distinct count).
+* (a) `GET /connector-plugins` lists `IcebergSinkConnector 1.12.0` loaded in the
+  Kafka 4.3.1 worker — the plugin-isolation risk did not materialise.
+* (b) Connect was SIGKILLed mid-traffic and restarted: source 254 entries =
+  bronze 254 events = 254 distinct `(entry_id, _lsn)`; amount sums equal to 18
+  decimals. Exactly-once held.
+
+## Operational notes learned in (b)
+
+* Regex subscriptions discover new topics only on metadata refresh
+  (`metadata.max.age.ms`, default 5 min). A new table's events are invisible to
+  the sink until then — the completeness gate must check that *every*
+  `ledger.app.*` topic is assigned to `connect-bronze-sink` with lag ≈ 0, not
+  only the heartbeat. Set `consumer.override.metadata.max.age.ms=10000`.
+* After a (re)start the first commit round may time out (the worker's control
+  consumer joins after the first `START_COMMIT`). Harmless; next round commits.
+* Bronze freshness ≈ heartbeat interval + `commit.interval-ms`.
+* Dynamic routing needs a route field in the value: `RegexRouter` maps the topic
+  to `bronze.<table>_cdc` and `InsertField` writes it to `_cdc_table`. The sink
+  commits offsets against `record.originalTopic()`, so renaming is safe.

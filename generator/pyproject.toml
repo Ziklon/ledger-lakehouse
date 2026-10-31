@@ -1,0 +1,13 @@
+[project]
+name = "ledger-gen"
+version = "0.1.0"
+description = "Deterministic double-entry ledger traffic generator (with CDC edge cases)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["psycopg[binary]==3.3.6"]
+
+[project.scripts]
+ledger-gen = "ledger_gen.cli:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"

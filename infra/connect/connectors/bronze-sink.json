@@ -1,0 +1,50 @@
+{
+  "connector.class": "org.apache.iceberg.connect.IcebergSinkConnector",
+  "tasks.max": "1",
+  "topics.regex": "ledger\\.app\\..*",
+  "consumer.override.metadata.max.age.ms": "10000",
+
+  "iceberg.catalog.type": "${env:ICEBERG_CATALOG_TYPE}",
+  "iceberg.catalog.uri": "${env:ICEBERG_REST_URI}",
+  "iceberg.catalog.warehouse": "${env:WAREHOUSE}",
+  "iceberg.catalog.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
+  "iceberg.catalog.s3.endpoint": "${env:S3_ENDPOINT}",
+  "iceberg.catalog.s3.path-style-access": "${env:S3_PATH_STYLE_ACCESS}",
+  "iceberg.catalog.s3.access-key-id": "${env:S3_ACCESS_KEY}",
+  "iceberg.catalog.s3.secret-access-key": "${env:S3_SECRET_KEY}",
+  "iceberg.catalog.client.region": "${env:S3_REGION}",
+
+  "iceberg.tables.dynamic-enabled": "true",
+  "iceberg.tables.route-field": "_cdc_table",
+  "iceberg.tables.auto-create-enabled": "true",
+  "iceberg.tables.default-partition-by": "day(_source_commit_ts)",
+  "iceberg.tables.evolve-schema-enabled": "true",
+  "iceberg.tables.schema-force-optional": "true",
+
+  "iceberg.control.topic": "_iceberg_control",
+  "iceberg.control.commit.interval-ms": "${env:BRONZE_COMMIT_INTERVAL_MS}",
+
+  "transforms": "unwrap,commitTs,rename,route,meta",
+
+  "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+  "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
+  "transforms.unwrap.add.fields": "op,lsn,source.ts_ms",
+
+  "transforms.commitTs.type": "org.apache.kafka.connect.transforms.TimestampConverter$Value",
+  "transforms.commitTs.field": "__source_ts_ms",
+  "transforms.commitTs.target.type": "Timestamp",
+
+  "transforms.rename.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+  "transforms.rename.renames": "__op:_op,__lsn:_lsn,__source_ts_ms:_source_commit_ts",
+  "transforms.rename.exclude": "__deleted",
+
+  "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+  "transforms.route.regex": "ledger\\.app\\.(.*)",
+  "transforms.route.replacement": "bronze.$1_cdc",
+
+  "transforms.meta.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+  "transforms.meta.topic.field": "_cdc_table",
+  "transforms.meta.timestamp.field": "_ingested_at",
+
+  "errors.tolerance": "none"
+}

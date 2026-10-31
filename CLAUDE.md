@@ -7,7 +7,11 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 ## Commands
 | | |
 |---|---|
-| `make up` | build (cached) + start core stack, waits for healthy |
+| `make up` | build (cached) + start stack, wait healthy, then `bootstrap` |
+| `make bootstrap` | idempotent: bronze DDL, `_iceberg_control` topic, PUT connectors |
+| `make seed` / `make traffic DATE=2026-01-02 [PACE=s]` | generator: initial load / one business day |
+| `make cdc-status` | connectors, replication-slot lag, sink lag, bronze freshness |
+| `make test` / `make lint` | pytest (generator) / ruff |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |
 | `make down` | stop, keep data |
@@ -26,6 +30,13 @@ Query: `docker compose exec trino trino --execute "..."`.
 - Trino catalog files are the per-environment overlay (Trino rejects unused props).
 - Topics are never auto-created (`auto_create_topics_enabled=false`).
 - Bronze is an append-only change log; silver mirrors; gold publishes (see docs/adr).
+  Tables: `lakehouse.bronze.<table>_cdc` (single-level namespaces: Glue has no nesting).
+  Bronze DDL is explicit (`infra/lakehouse/bronze.sql`) and applied BEFORE the sink starts.
+- Order CDC events by `_lsn`, never by `_source_commit_ts` (ms precision, ties are common).
+- Delete events (`_op='d'`) carry only the key; NOT NULL columns arrive as type
+  DEFAULTS (0, '', 1970-01-01), not NULL. Never take business columns from a delete event.
+- Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
+- Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.
 - SQL: explicit column lists, never `SELECT *`. sqlfluff (trino dialect). Python: uv + ruff.
 - `_batch_id` comes from a dbt var supplied by Airflow — never `invocation_id`.
 - Decisions and deviations from the brief → `docs/adr/NNNN-*.md` (MADR).
@@ -39,5 +50,9 @@ connector status, test output). Healthy ≠ correct: prove behavior (e.g. `make 
 - Named volumes mounted on a path absent from the image are root-owned → non-root
   services (iceberg-rest uid 1000) can't write. Mount on an existing, owned dir.
 - Trino `map['k']` throws on missing keys; use `element_at(map, 'k')`.
+- Config overrides on the shell (`VAR=x make up`) are ephemeral: the next `docker compose up`
+  silently recreates services with `.env` values. Persist settings in `.env`.
+- `make env-check` (run by `make up`) fails if `.env` lacks keys from `.env.example`.
+- Sink regex subscription finds new topics only on metadata refresh (override set to 10s).
 - Iceberg sink runtime isn't on Maven Central; built from ASF source in
   `infra/connect/Dockerfile` (~7 min cold, cached afterwards).

@@ -1,0 +1,36 @@
+# uv workspace root. Each Python component is a workspace member with its own
+# pyproject; one lockfile (uv.lock) pins the whole graph.
+[project]
+name = "ledger-lakehouse"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["ledger-gen"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+    "sqlfluff==4.5.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["generator"]
+
+[tool.uv.sources]
+ledger-gen = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ledger_gen"]
+
+[tool.pytest.ini_options]
+testpaths = ["generator/tests"]
