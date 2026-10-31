@@ -1,0 +1,263 @@
+# ledger-lakehouse -- Phase 1 local stack.
+# Every version is pinned. Every service has a healthcheck. Config comes from .env.
+# Optional components live behind profiles:  docker compose --profile ui up -d
+
+name: ledger-lakehouse
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------------------
+  # Source OLTP database: the ledger. Holds CURRENT state only; history is
+  # captured from its WAL by Debezium.
+  # ---------------------------------------------------------------------------
+  postgres:
+    <<: *restart
+    image: postgres:16.15
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      POSTGRES_DB: ${PG_DATABASE}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    ports: ["${HOST_PG_PORT}:5432"]
+    volumes:
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DATABASE}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+
+  # ---------------------------------------------------------------------------
+  # Kafka API + Confluent-compatible schema registry in one binary.
+  # Two listeners: 'internal' for containers, 'external' for the host.
+  # ---------------------------------------------------------------------------
+  redpanda:
+    <<: *restart
+    image: redpandadata/redpanda:v26.2.6
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:${HOST_KAFKA_PORT}
+      - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --default-log-level=warn
+    ports:
+      - "${HOST_KAFKA_PORT}:19092"
+      - "${HOST_SCHEMA_REGISTRY_PORT}:18081"
+    volumes:
+      - ./infra/redpanda/bootstrap.yaml:/etc/redpanda/.bootstrap.yaml:ro
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' && curl -fs http://localhost:8081/subjects"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 1536m
+
+  # ---------------------------------------------------------------------------
+  # S3-compatible object store. MinIO no longer publishes images to Docker Hub
+  # or Quay, so we use Chainguard's build, pinned by multi-arch INDEX digest.
+  # See docs/adr/0003-object-store.md (upgrade: re-resolve the index digest).
+  # ---------------------------------------------------------------------------
+  minio:
+    <<: *restart
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "${HOST_MINIO_PORT}:9000"
+      - "${HOST_MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 768m
+
+  # One-shot, idempotent: create the warehouse bucket. Uses the AWS CLI on
+  # purpose -- the same tool and commands work against real S3 in Phase 3.
+  minio-init:
+    image: amazon/aws-cli:2.39.3
+    depends_on:
+      minio: { condition: service_healthy }
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: ${S3_REGION}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        aws --endpoint-url ${S3_ENDPOINT} s3api head-bucket --bucket ${WAREHOUSE_BUCKET} 2>/dev/null
+        || aws --endpoint-url ${S3_ENDPOINT} s3api create-bucket --bucket ${WAREHOUSE_BUCKET};
+        aws --endpoint-url ${S3_ENDPOINT} s3api head-bucket --bucket ${WAREHOUSE_BUCKET}
+        && echo "bucket ${WAREHOUSE_BUCKET} ready"
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Iceberg REST catalog: owns the atomic "current metadata.json" pointer per
+  # table. Backed by SQLite on a volume so it survives restarts.
+  # See docs/adr/0002-catalog.md.
+  # ---------------------------------------------------------------------------
+  iceberg-rest:
+    <<: *restart
+    image: apache/iceberg-rest-fixture:1.10.1
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+    environment:
+      CATALOG_URI: jdbc:sqlite:/home/iceberg/iceberg_catalog.db
+      CATALOG_JDBC_USER: iceberg
+      CATALOG_JDBC_PASSWORD: iceberg
+      CATALOG_WAREHOUSE: ${WAREHOUSE}
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: ${S3_ENDPOINT}
+      CATALOG_S3_PATH__STYLE__ACCESS: ${S3_PATH_STYLE_ACCESS}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_REGION: ${S3_REGION}
+    ports: ["${HOST_ICEBERG_REST_PORT}:8181"]
+    volumes:
+      # Mounted on a dir that EXISTS in the image (owned by uid 1000), so the
+      # empty volume inherits that ownership. A new path would be root-owned
+      # and the non-root process could not create the SQLite file.
+      - iceberg-catalog:/home/iceberg
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8181/v1/config"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    mem_limit: 768m
+
+  # ---------------------------------------------------------------------------
+  # Kafka Connect: Debezium source (WAL -> Kafka) + Iceberg sink (Kafka -> bronze)
+  # in ONE worker to save a JVM. Connectors are registered via REST (:8083).
+  # ---------------------------------------------------------------------------
+  connect:
+    <<: *restart
+    build:
+      context: ./infra/connect
+    image: ledger-lakehouse/connect:local
+    depends_on:
+      redpanda: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      iceberg-rest: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      GROUP_ID: ledger-connect
+      # Internal topics: Connect creates them compacted (kept forever).
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL}
+      # Converters (Avro + schema registry). Swapped for Glue SR converters on AWS.
+      KEY_CONVERTER: ${CONNECT_KEY_CONVERTER}
+      VALUE_CONVERTER: ${CONNECT_VALUE_CONVERTER}
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL}
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL}
+      # Lets connector JSON reference ${env:VAR} -> no secrets in connector configs.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      HEAP_OPTS: -Xms512m -Xmx1g
+      # Values referenced by connector configs through the env config provider.
+      PG_HOST: ${PG_HOST}
+      PG_PORT: ${PG_PORT}
+      PG_DATABASE: ${PG_DATABASE}
+      PG_CDC_USER: ${PG_CDC_USER}
+      PG_CDC_PASSWORD: ${PG_CDC_PASSWORD}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_PATH_STYLE_ACCESS: ${S3_PATH_STYLE_ACCESS}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      WAREHOUSE: ${WAREHOUSE}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL}
+    ports: ["${HOST_CONNECT_PORT}:8083"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    mem_limit: 1536m
+
+  # ---------------------------------------------------------------------------
+  # Trino: SQL over Iceberg (lakehouse catalog) and the source (ledger_pg).
+  # JVM heap = 80% of mem_limit (image default MaxRAMPercentage=80).
+  # ---------------------------------------------------------------------------
+  trino:
+    <<: *restart
+    image: trinodb/trino:484
+    depends_on:
+      iceberg-rest: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      WAREHOUSE: ${WAREHOUSE}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_PATH_STYLE_ACCESS: ${S3_PATH_STYLE_ACCESS}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      PG_HOST: ${PG_HOST}
+      PG_PORT: ${PG_PORT}
+      PG_DATABASE: ${PG_DATABASE}
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+    ports: ["${HOST_TRINO_PORT}:8080"]
+    volumes:
+      - ./infra/trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    mem_limit: 3g
+
+  # ---------------------------------------------------------------------------
+  # Optional: broker/registry/connect UI.  docker compose --profile ui up -d
+  # ---------------------------------------------------------------------------
+  redpanda-console:
+    <<: *restart
+    profiles: ["ui"]
+    image: redpandadata/console:v3.13.1
+    depends_on:
+      redpanda: { condition: service_healthy }
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      SCHEMAREGISTRY_ENABLED: "true"
+      SCHEMAREGISTRY_URLS: ${SCHEMA_REGISTRY_URL}
+      KAFKACONNECT_ENABLED: "true"
+      KAFKACONNECT_CLUSTERS_NAME: ledger-connect
+      KAFKACONNECT_CLUSTERS_URL: http://connect:8083
+    ports: ["${HOST_REDPANDA_CONSOLE_PORT}:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/admin/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+
+volumes:
+  pg-data:
+  redpanda-data:
+  minio-data:
+  iceberg-catalog:

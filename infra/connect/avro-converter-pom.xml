@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Not a real project: a dependency manifest. The Dockerfile runs
+  `mvn dependency:copy-dependencies` on it to resolve the Confluent Avro
+  converter and its transitive graph into a flat directory of jars, which
+  becomes a Kafka Connect plugin directory.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.ledgerlakehouse</groupId>
+  <artifactId>connect-avro-converter-deps</artifactId>
+  <version>1</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <!-- Overridden from the Dockerfile (-Dconfluent.version=...) -->
+    <confluent.version>8.3.2</confluent.version>
+  </properties>
+
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <url>https://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-connect-avro-converter</artifactId>
+      <version>${confluent.version}</version>
+      <exclusions>
+        <!-- Provided by the Connect runtime. A second copy on the plugin
+             classpath causes ClassCastExceptions across classloaders. -->
+        <exclusion>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>

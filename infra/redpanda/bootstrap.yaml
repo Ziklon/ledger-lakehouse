@@ -1,0 +1,9 @@
+# Redpanda *cluster* properties, applied once when the cluster first forms.
+# Afterwards they live in the controller log; change them with `rpk cluster config set`.
+
+# Every topic is created deliberately (Debezium topic.creation.*, Connect internal
+# topics, Iceberg control topic) so it gets the right cleanup/retention policy.
+auto_create_topics_enabled: false
+
+# Single-node laptop cluster.
+default_topic_replications: 1
