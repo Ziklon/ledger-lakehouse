@@ -1,0 +1,52 @@
+version: 2
+
+# Shared column docs for every *_current mirror built by macros/cdc_current.sql
+x-mirror-columns: &mirror_columns
+  - name: is_deleted
+    description: >
+      True when the latest source event for the key is a delete. The row is
+      kept (soft delete) with business columns carried forward from the last
+      non-delete event. Part of row_hash.
+  - name: deleted_at
+    description: Source commit time of the delete event; NULL when live.
+  - name: row_hash
+    description: >
+      dbt_utils.generate_surrogate_key over business columns + is_deleted.
+      Rows are merged only when it changes (hash-diff change detection).
+  - name: _last_lsn
+    description: WAL position of the last applied event (monotonic per key; LSN guard).
+  - name: _last_commit_ts
+    description: Source commit time of the last applied event.
+  - name: _batch_id
+    description: Business date of the batch that last changed this row (dbt var batch_id).
+
+models:
+  - name: accounts_current
+    description: >
+      Mirror of app.accounts with soft deletes. One row per account_id that
+      existed at the end of any processed window. Keys created and deleted
+      within a single window never appear.
+    columns: *mirror_columns
+
+  - name: assets_current
+    description: Mirror of app.assets with soft deletes.
+    columns: *mirror_columns
+
+  - name: ledger_entries_current
+    description: >
+      Mirror of app.ledger_entries. Entries are immutable in the source;
+      corrections are reversal entries (reverses_entry_id).
+    columns: *mirror_columns
+
+  - name: account_balances_current
+    description: >
+      Balance per (account_id, asset) = sum(CREDIT) - sum(DEBIT) over all
+      live entries. Recomputed only for accounts with entries in the batch
+      window (affected keys), merged only when the balance changed.
+    columns:
+      - name: balance
+        description: decimal(38,18); a liability to the customer, negative for house accounts.
+      - name: row_hash
+        description: Hash of (account_id, asset, balance).
+      - name: _batch_id
+        description: Business date of the batch that last changed this balance.

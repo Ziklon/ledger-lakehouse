@@ -12,6 +12,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make seed` / `make traffic DATE=2026-01-02 [PACE=s]` | generator: initial load / one business day |
 | `make cdc-status` | connectors, replication-slot lag, sink lag, bronze freshness |
 | `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
+| `cd dbt && DBT_PROFILES_DIR=. uv run --env-file ../.env dbt run --vars '{batch_id: ..., window_start: ..., window_end: ...}'` | silver for one window (milestone d adds `make run-day`) |
 | `make test` / `make lint` | pytest (generator) / ruff |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |
@@ -36,6 +37,10 @@ Query: `docker compose exec trino trino --execute "..."`.
 - Order CDC events by `_lsn`, never by `_source_commit_ts` (ms precision, ties are common).
 - Delete events (`_op='d'`) carry only the key; NOT NULL columns arrive as type
   DEFAULTS (0, '', 1970-01-01), not NULL. Never take business columns from a delete event.
+- dbt: staging = `cdc_latest_event` macro, silver = `cdc_current` macro (row-level carry-forward on
+  delete, skip create+delete in window, LSN guard, hash incl. is_deleted). Guard var checks
+  with `execute` so parse/ls (Cosmos) work without vars.
+- Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
 - Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.
 - SQL: explicit column lists, never `SELECT *`. sqlfluff (trino dialect). Python: uv + ruff.

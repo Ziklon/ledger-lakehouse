@@ -8,6 +8,8 @@ dependencies = ["ledger-gen"]
 
 [dependency-groups]
 dev = [
+    "dbt-core==1.11.16",
+    "dbt-trino==1.11.0",
     "pytest==9.2.0",
     "ruff==0.17.3",
     "sqlfluff==4.5.0",

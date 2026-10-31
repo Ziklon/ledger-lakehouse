@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Append-only CDC change log written by the Iceberg Kafka Connect sink.
+      One row per event; unique key (pk, _lsn). Never mutated by dbt.
+    database: lakehouse
+    schema: bronze
+    loaded_at_field: _source_commit_ts
+    # Business tables measure business ACTIVITY (a quiet night is normal):
+    # soft, long warning only. Pipeline health is the heartbeat below.
+    freshness:
+      warn_after: { count: 12, period: hour }
+    tables:
+      - name: assets_cdc
+      - name: accounts_cdc
+      - name: ledger_entries_cdc
+      - name: cdc_heartbeat_cdc
+        description: Debezium heartbeat; completeness-gate evidence.
+        freshness:
+          warn_after: { count: 2, period: minute }
+          error_after: { count: 10, period: minute }

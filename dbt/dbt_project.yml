@@ -1,0 +1,32 @@
+name: ledger_lakehouse
+version: "0.1.0"
+config-version: 2
+profile: ledger_lakehouse
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: target
+clean-targets: [target, dbt_packages]
+
+# Batch identity and window. ALWAYS supplied by the orchestrator
+# (Airflow / `make run-day`); never derived from invocation_id, because Cosmos
+# runs one dbt invocation per model.
+#   batch_id:     business date, e.g. 2026-01-02
+#   window_start: ISO-8601 timestamp, inclusive   (source commit time)
+#   window_end:   ISO-8601 timestamp, exclusive
+vars:
+  batch_id: null
+  window_start: null
+  window_end: null
+
+models:
+  ledger_lakehouse:
+    +on_schema_change: append_new_columns
+    staging:
+      +schema: staging
+      +materialized: view
+    silver:
+      +schema: silver
+      +materialized: incremental
+      +incremental_strategy: merge

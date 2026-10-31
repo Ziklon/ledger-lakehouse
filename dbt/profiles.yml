@@ -1,0 +1,26 @@
+# Committed on purpose: every value comes from the environment (no secrets here).
+# local  -> from the host (make targets):  localhost:18080
+# docker -> from inside the compose network (Airflow): trino:8080
+ledger_lakehouse:
+  target: "{{ env_var('DBT_TARGET', 'local') }}"
+  outputs:
+    local:
+      type: trino
+      method: none
+      http_scheme: http
+      host: localhost
+      port: "{{ env_var('HOST_TRINO_PORT', '18080') | int }}"
+      user: dbt
+      database: lakehouse
+      schema: staging
+      threads: 4
+    docker:
+      type: trino
+      method: none
+      http_scheme: http
+      host: trino
+      port: 8080
+      user: dbt
+      database: lakehouse
+      schema: staging
+      threads: 4
