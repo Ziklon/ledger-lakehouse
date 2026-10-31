@@ -1,3 +1,5 @@
+-- sqlfluff:exclude_rules:LT01,CP01
+-- (hand-aligned DDL: statements UPPER, types lower; sqlfluff fix would destroy the alignment)
 -- =============================================================================
 -- Control plane: one row per publication batch (docs/adr/0012).
 -- Applied through Trino by scripts/bootstrap.sh (idempotent: IF NOT EXISTS).

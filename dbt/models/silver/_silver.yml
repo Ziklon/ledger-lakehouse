@@ -27,22 +27,42 @@ models:
       existed at the end of any processed window. Keys created and deleted
       within a single window never appear.
     columns: *mirror_columns
+    data_tests:
+      - unique: {column_name: account_id}
+      - not_null: {column_name: account_id}
+      - not_null: {column_name: row_hash}
+      - accepted_values:
+          column_name: status
+          arguments: {values: [ACTIVE, FROZEN, CLOSED]}
 
   - name: assets_current
     description: Mirror of app.assets with soft deletes.
     columns: *mirror_columns
+    data_tests:
+      - unique: {column_name: asset}
+      - not_null: {column_name: asset}
 
   - name: ledger_entries_current
     description: >
       Mirror of app.ledger_entries. Entries are immutable in the source;
       corrections are reversal entries (reverses_entry_id).
     columns: *mirror_columns
+    data_tests:
+      - unique: {column_name: entry_id}
+      - not_null: {column_name: entry_id}
+      - accepted_values:
+          column_name: direction
+          arguments: {values: [DEBIT, CREDIT]}
 
   - name: account_balances_current
     description: >
       Balance per (account_id, asset) = sum(CREDIT) - sum(DEBIT) over all
       live entries. Recomputed only for accounts with entries in the batch
       window (affected keys), merged only when the balance changed.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: {combination_of_columns: [account_id, asset]}
+      - not_null: {column_name: balance}
     columns:
       - name: balance
         description: decimal(38,18); a liability to the customer, negative for house accounts.

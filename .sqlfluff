@@ -1,0 +1,34 @@
+# sqlfluff 4.5 -- `make lint`. Trino dialect; dbt models rendered offline by the
+# jinja templater (dbt built-ins + our macros + a dbt_utils stub), so lint
+# needs no running stack (CI-friendly).
+[sqlfluff]
+dialect = trino
+templater = jinja
+max_line_length = 120
+# Explicit column lists are the rule (CLAUDE.md); aliasing style is free.
+exclude_rules = AL01, AL07, ST06
+large_file_skip_byte_limit = 40000
+
+[sqlfluff:templater:jinja]
+apply_dbt_builtins = True
+load_macros_from_path = dbt/macros
+library_path = dbt/.sqlfluff_libs
+
+[sqlfluff:templater:jinja:context]
+batch_id = 2026-01-02
+
+[sqlfluff:indentation]
+tab_space_size = 4
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = consistent
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = consistent
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = consistent
+
+# Lint-time override: sqlfluff's trino dialect can't parse Iceberg time travel
+# (`FOR VERSION AS OF 'tag'`), which Trino itself runs fine. Render at_eod as a
+# plain ref for linting only; the real macro is dbt/macros/gold_publish.sql.
+[sqlfluff:templater:jinja:macros]
+lint_at_eod = {% macro at_eod(model_name, batch_id) %}{{ ref(model_name) }}{% endmacro %}

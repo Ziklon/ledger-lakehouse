@@ -14,7 +14,8 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
 | `make run-day DATE=2026-01-02 [CUTOFF=now]` | publish one business day: gate → RUNNING → silver → EOD tags → gold → COMMITTED |
 | `make batches` | show `control.batches` |
-| `make test` / `make lint` | pytest (generator) / ruff |
+| `make test` | pytest (generator, pipeline) + dbt unit tests (needs the stack) |
+| `make lint` | ruff + sqlfluff (trino, jinja templater, offline) |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |
 | `make down` | stop, keep data |
@@ -48,6 +49,11 @@ Query: `docker compose exec trino trino --execute "..."`.
   UP to the ms. Closed days are refused; rerunning the latest COMMITTED day reuses its window and tags.
 - Gold reads silver `FOR VERSION AS OF 'eod_YYYY_MM_DD'`; consumers use `gold.accounts` /
   `gold.account_balances` (latest COMMITTED, soft deletes filtered).
+- Tests (ADR 0013): invariants = `tag:invariant`, own step before COMMITTED (a failure leaves the
+  batch RUNNING; runbook docs/runbooks/invariant-failure.md); standard tests inside `dbt build`;
+  unit tests in `make test`/CI only. Prove new tests can FAIL (corrupt data / mutate the macro).
+- sqlfluff can't parse `FOR VERSION AS OF`: `at_eod` lives alone in `macros/time_travel.sql` so
+  `.sqlfluff` overrides it at lint time. `noqa` must be alone in its comment.
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
 - Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.

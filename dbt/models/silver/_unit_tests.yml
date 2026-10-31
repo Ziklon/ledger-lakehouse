@@ -1,0 +1,159 @@
+version: 2
+
+# Edge-case unit tests for the CDC macros (cdc_latest_event -> staging,
+# cdc_current -> silver), on hand-written rows. They test LOGIC, so they run in
+# `make test` / CI, not in every batch (ledger_pipeline excludes unit_test).
+#
+# Fixture hash: a7ce0d3b7d78866a79939df1f8026cf5 =
+#   generate_surrogate_key(customer_id=7, 'BTC', 'ACTIVE',
+#                          opened_at = updated_at = 2026-01-01 00:00:00 UTC, is_deleted=false)
+#   same values with is_deleted=true -> d2cd6dd0db8a7a124470038aa1175c1e
+# computed with the exact expression dbt compiles, so tests on "hash changed or
+# not" exercise the real comparison.
+
+unit_tests:
+
+  # ---------------------------------------------------------------- staging
+  - name: several_updates_in_one_window_latest_by_lsn_wins
+    description: >
+      Three events, same commit timestamp (ms tie), plus one event after the
+      window. Order is _lsn, never _source_commit_ts; out-of-window ignored.
+    model: stg_accounts_latest
+    overrides:
+      vars: {window_start: "2026-01-02T00:00:00Z", window_end: "2026-01-03T00:00:00Z"}
+    given:
+      - input: source('bronze', 'accounts_cdc')
+        rows:
+          - {account_id: 1, customer_id: 7, status: ACTIVE, _op: c, _lsn: 10, _source_commit_ts: "2026-01-02 10:00:00 UTC"}
+          - {account_id: 1, customer_id: 7, status: FROZEN, _op: u, _lsn: 30, _source_commit_ts: "2026-01-02 10:00:00 UTC"}
+          - {account_id: 1, customer_id: 7, status: CLOSED, _op: u, _lsn: 20, _source_commit_ts: "2026-01-02 10:00:00 UTC"}
+          - {account_id: 1, customer_id: 7, status: ACTIVE, _op: u, _lsn: 40, _source_commit_ts: "2026-01-03 00:00:00 UTC"}
+    expect:
+      rows:
+        - {account_id: 1, status: FROZEN, _op: u, _lsn: 30, has_live_event: true}
+
+  - name: default_filled_delete_never_supplies_business_columns
+    description: >
+      REPLICA IDENTITY DEFAULT: Debezium fills NOT NULL columns of a delete
+      with type defaults (0 = the house customer!, '', 1970). Staging must keep
+      the latest NON-delete values and still report the delete as latest op.
+    model: stg_accounts_latest
+    overrides:
+      vars: {window_start: "2026-01-02T00:00:00Z", window_end: "2026-01-03T00:00:00Z"}
+    given:
+      - input: source('bronze', 'accounts_cdc')
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, opened_at: "2026-01-01 00:00:00 UTC", _op: u, _lsn: 10, _source_commit_ts: "2026-01-02 10:00:00 UTC"}
+          - {account_id: 1, customer_id: 0, asset: "", status: "", opened_at: "1970-01-01 00:00:00 UTC", _op: d, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+    expect:
+      rows:
+        - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, _op: d, _lsn: 20, has_live_event: true}
+
+  # ----------------------------------------------------------------- silver
+  - name: delete_with_null_columns_keeps_last_known_values
+    description: >
+      Window holds only a key-only delete (business columns NULL). Silver
+      marks it deleted and carries the last known values forward.
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-02"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 1, customer_id: null, asset: null, status: null, has_live_event: false, _op: d, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, opened_at: "2026-01-01 00:00:00 UTC", updated_at: "2026-01-01 00:00:00 UTC", is_deleted: false, row_hash: a7ce0d3b7d78866a79939df1f8026cf5, _last_lsn: 10}
+    expect:
+      rows:
+        - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, is_deleted: true, deleted_at: "2026-01-02 11:00:00 UTC", _last_lsn: 20, _batch_id: "2026-01-02"}
+
+  - name: delete_detected_only_through_is_deleted_in_hash
+    description: >
+      Business columns are unchanged by a delete (carried forward), so the row
+      is emitted ONLY because is_deleted is part of row_hash. The stored hash
+      is the real hash of the live row; the emitted one must differ.
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-02"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 1, has_live_event: false, _op: d, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, opened_at: "2026-01-01 00:00:00 UTC", updated_at: "2026-01-01 00:00:00 UTC", is_deleted: false, row_hash: a7ce0d3b7d78866a79939df1f8026cf5, _last_lsn: 10}
+    expect:
+      rows:
+        - {account_id: 1, is_deleted: true, row_hash: d2cd6dd0db8a7a124470038aa1175c1e}
+
+  - name: unchanged_live_event_emits_nothing
+    description: >
+      Negative control for the test above: a live event with identical values
+      (e.g. a status flap within the window) hashes equal -> no write.
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-02"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, opened_at: "2026-01-01 00:00:00 UTC", updated_at: "2026-01-01 00:00:00 UTC", has_live_event: true, _op: u, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, opened_at: "2026-01-01 00:00:00 UTC", updated_at: "2026-01-01 00:00:00 UTC", is_deleted: false, row_hash: a7ce0d3b7d78866a79939df1f8026cf5, _last_lsn: 10}
+    expect:
+      rows: []
+
+  - name: create_and_delete_in_same_window_is_skipped
+    description: Key unknown to silver whose latest event is a delete never existed at EOD.
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-02"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 2, customer_id: 9, asset: ETH, status: ACTIVE, has_live_event: true, _op: d, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 7, is_deleted: false, row_hash: a7ce0d3b7d78866a79939df1f8026cf5, _last_lsn: 10}
+    expect:
+      rows: []
+
+  - name: deleted_key_reinserted_comes_back
+    description: Latest event wins; a re-insert revives the key with the NEW values.
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-03"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 1, customer_id: 40, asset: BTC, status: ACTIVE, opened_at: "2026-01-03 09:00:00 UTC", updated_at: "2026-01-03 09:00:00 UTC", has_live_event: true, _op: c, _lsn: 30, _source_commit_ts: "2026-01-03 09:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 7, asset: BTC, status: ACTIVE, is_deleted: true, deleted_at: "2026-01-02 11:00:00 UTC", row_hash: deadbeef, _last_lsn: 20}
+    expect:
+      rows:
+        - {account_id: 1, customer_id: 40, is_deleted: false, deleted_at: null, _last_lsn: 30}
+
+  - name: lsn_guard_ignores_stale_events
+    description: >
+      Rerunning an OLDER window must not move a key backwards (milestone c
+      found a wrongful delete this way without the guard).
+    model: accounts_current
+    overrides:
+      macros: {is_incremental: true}
+      vars: {batch_id: "2026-01-02"}
+    given:
+      - input: ref('stg_accounts_latest')
+        rows:
+          - {account_id: 1, has_live_event: false, _op: d, _lsn: 20, _source_commit_ts: "2026-01-02 11:00:00 UTC"}
+      - input: this
+        rows:
+          - {account_id: 1, customer_id: 40, is_deleted: false, row_hash: deadbeef, _last_lsn: 30}
+    expect:
+      rows: []

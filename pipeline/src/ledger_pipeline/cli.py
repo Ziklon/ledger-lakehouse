@@ -26,9 +26,9 @@ from .windows import BatchPlan, BatchRefused, ceil_ms, plan_batch
 log = logging.getLogger("ledger_pipeline")
 
 
-def dbt_build(s: Settings, select: list[str], plan: BatchPlan) -> None:
-    dbt = Path(sys.executable).parent / "dbt"
-    cmd = [str(dbt), "build", "--select", *select, "--vars", json.dumps(plan.dbt_vars())]
+def dbt(s: Settings, command: str, args: list[str], plan: BatchPlan) -> None:
+    exe = Path(sys.executable).parent / "dbt"
+    cmd = [str(exe), command, *args, "--vars", json.dumps(plan.dbt_vars())]
     log.info("dbt %s", " ".join(cmd[1:]))
     subprocess.run(
         cmd,
@@ -60,14 +60,20 @@ def run_day(batch_id: date, cutoff: datetime | None, gate_timeout: int) -> None:
     lsn, commit_ts = control.open_batch(conn, plan)
     log.info("open_batch: RUNNING, watermark lsn=%s commit_ts=%s", lsn, commit_ts)
 
-    dbt_build(s, ["path:models/staging", "path:models/silver"], plan)
+    # Unit tests check LOGIC on fixtures (make test / CI), not the batch's data;
+    # invariants run as their own step below.
+    build = ["--exclude-resource-type", "unit_test", "--exclude", "tag:invariant"]
+    dbt(s, "build", ["--select", "path:models/staging", "path:models/silver", *build], plan)
 
     tagged = tags.tag_eod(s, plan.batch_id, committed=plan.is_rerun)
     log.info("tag_eod: %s", tagged)
 
-    dbt_build(s, ["path:models/gold"], plan)
+    dbt(s, "build", ["--select", "path:models/gold", *build], plan)
 
-    log.info("invariants: added in milestone (e)")
+    # Gate before publication: any failure leaves the batch RUNNING, so the
+    # consumer views keep serving the previous COMMITTED day.
+    dbt(s, "test", ["--select", "tag:invariant"], plan)
+    log.info("invariants: all passed")
 
     counts, sums = control.dataset_stats(conn, plan.batch_id)
     control.commit_batch(conn, plan.batch_id, counts, sums)
@@ -105,6 +111,15 @@ def main(argv: list[str] | None = None) -> int:
     except BatchRefused as e:
         log.error("refused: %s", e)
         return 2
+    except subprocess.CalledProcessError as e:
+        log.error(
+            "step failed (%s): batch %s NOT committed, it stays RUNNING; consumers still "
+            "see the previous COMMITTED day. Fix the cause, then rerun the same DATE "
+            "(docs/runbooks/invariant-failure.md).",
+            " ".join(e.cmd[1:3]),
+            args.batch_id,
+        )
+        return 1
     return 0
 
 

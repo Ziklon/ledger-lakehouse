@@ -69,8 +69,10 @@ batches: ## Show control.batches
 	@$(TRINO) --execute "select batch_id, status, window_start, window_end, watermark_lsn, prev_batch_id, committed_at from lakehouse.control.batches order by batch_id"
 
 # --- quality -------------------------------------------------------------------
-test: ## Unit tests (generator)
+test: ## pytest (generator, pipeline) + dbt unit tests (needs the stack: make up)
 	uv run pytest -q
+	cd dbt && DBT_PROFILES_DIR=. uv run --env-file ../.env dbt test --select test_type:unit
 
-lint: ## ruff (Python)
+lint: ## ruff (Python) + sqlfluff (SQL, trino dialect; offline)
 	uv run ruff check . && uv run ruff format --check .
+	uv run sqlfluff lint dbt/models dbt/tests infra/lakehouse

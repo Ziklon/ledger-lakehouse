@@ -2,16 +2,74 @@ version: 2
 
 # Published datasets (macros/gold_publish.sql). Batch identity comes from the
 # pipeline as vars; consumers read the views in gold/consumer.
+#
+# Standard tests are scoped to THIS batch's partition (config.where), so their
+# cost does not grow with history. Invariants carry tag `invariant` and run as
+# their own pipeline step, after gold and before COMMITTED (ledger_pipeline).
+
+x-this-snapshot: &this_snapshot
+  where: "snapshot_date = date '{{ var('batch_id') }}'"
+x-this-batch: &this_batch
+  where: "batch_date = date '{{ var('batch_id') }}'"
+
 models:
   - name: accounts_full_daily
     description: Complete EOD state of accounts per snapshot_date (incl. soft-deleted rows), from tag eod_N.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: {combination_of_columns: [account_id, snapshot_date]}
+          config: *this_snapshot
+      - accepted_values:
+          column_name: status
+          arguments: {values: [ACTIVE, FROZEN, CLOSED]}
+          config: *this_snapshot
+      - full_plus_incremental_equals_full:
+          arguments:
+            incremental: ref('accounts_incremental')
+            key: account_id
+          config: {tags: [invariant]}
+
   - name: accounts_incremental
     description: Net changes per batch_date, op I/U/D, EOD(N) vs EOD(prev_batch_id) (ADR 0009).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: {combination_of_columns: [account_id, batch_date]}
+          config: *this_batch
+      - accepted_values:
+          column_name: op
+          arguments: {values: [I, U, D]}
+          config: *this_batch
+
   - name: account_balances_full_daily
     description: Complete EOD balances per (account_id, asset) per snapshot_date.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: {combination_of_columns: [account_id, asset, snapshot_date]}
+          config: *this_snapshot
+      - full_plus_incremental_equals_full:
+          arguments:
+            incremental: ref('account_balances_incremental')
+            key: [account_id, asset]
+            soft_delete: false
+          config: {tags: [invariant]}
+
   - name: account_balances_incremental
-    description: Net balance changes per batch_date (I/U).
+    description: >
+      Net balance changes per batch_date. Only I/U: ledger entries are never
+      deleted, so a balance row never disappears; a D here means a bug.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: {combination_of_columns: [account_id, asset, batch_date]}
+          config: *this_batch
+      - accepted_values:
+          column_name: op
+          arguments: {values: [I, U]}
+          config: *this_batch
+
   - name: accounts
     description: Consumer view. Live accounts as of the latest COMMITTED batch.
+    data_tests:
+      - unique: {column_name: account_id}
+
   - name: account_balances
     description: Consumer view. Balances as of the latest COMMITTED batch.

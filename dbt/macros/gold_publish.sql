@@ -18,15 +18,6 @@
   so active(FULL N-1) + INCREMENTAL N = active(FULL N)   (checked in milestone e).
 #}
 
-{% macro eod_tag(batch_id) -%}
-eod_{{ batch_id | replace('-', '_') }}
-{%- endmacro %}
-
-{# A model "as of" the end of a business day: Iceberg time travel to the tag. #}
-{% macro at_eod(model_name, batch_id) -%}
-{{ ref(model_name) }} for version as of '{{ eod_tag(batch_id) }}'
-{%- endmacro %}
-
 {#- Rerun idempotency: wipe this batch's partition before appending it again.
     Partition-aligned, so Iceberg drops whole files (metadata-only delete).
     Works even when the new result is empty (delete+insert would not). -#}

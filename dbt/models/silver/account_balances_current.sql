@@ -22,8 +22,9 @@ recomputed as (
         e.asset,
         sum(case when e.direction = 'CREDIT' then e.amount else -e.amount end) as balance
     from {{ ref('ledger_entries_current') }} as e
-    where e.account_id in (select account_id from affected)
-      and not e.is_deleted
+    where
+        e.account_id in (select a.account_id from affected as a)
+        and not e.is_deleted
     group by e.account_id, e.asset
 ),
 
@@ -44,7 +45,7 @@ select
     cast('{{ var("batch_id") }}' as varchar) as _batch_id
 from hashed as h
 {% if is_incremental() %}
-left join {{ this }} as t
-    on h.account_id = t.account_id and h.asset = t.asset
-where t.row_hash is null or t.row_hash <> h.row_hash
+    left join {{ this }} as t
+        on h.account_id = t.account_id and h.asset = t.asset
+    where t.row_hash is null or t.row_hash <> h.row_hash
 {% endif %}

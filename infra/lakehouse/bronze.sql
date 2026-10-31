@@ -1,3 +1,5 @@
+-- sqlfluff:exclude_rules:LT01,CP01
+-- (hand-aligned DDL: statements UPPER, types lower; sqlfluff fix would destroy the alignment)
 -- =============================================================================
 -- Bronze: append-only CDC change log (one row per EVENT, not per entity).
 -- Applied through Trino by scripts/bootstrap.sh (idempotent: IF NOT EXISTS).
@@ -17,7 +19,8 @@ CREATE SCHEMA IF NOT EXISTS lakehouse.bronze;
 CREATE TABLE IF NOT EXISTS lakehouse.bronze.assets_cdc (
     asset               varchar,
     name                varchar,
-    precision           integer,
+    -- 'precision' is a keyword, but it is the source column name (CDC contract)
+    precision           integer,  -- noqa: RF04
     updated_at          timestamp(6) with time zone,
     _op                 varchar,
     _lsn                bigint,
