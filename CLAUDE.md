@@ -12,7 +12,8 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make seed` / `make traffic DATE=2026-01-02 [PACE=s]` | generator: initial load / one business day |
 | `make cdc-status` | connectors, replication-slot lag, sink lag, bronze freshness |
 | `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
-| `cd dbt && DBT_PROFILES_DIR=. uv run --env-file ../.env dbt run --vars '{batch_id: ..., window_start: ..., window_end: ...}'` | silver for one window (milestone d adds `make run-day`) |
+| `make run-day DATE=2026-01-02 [CUTOFF=now]` | publish one business day: gate → RUNNING → silver → EOD tags → gold → COMMITTED |
+| `make batches` | show `control.batches` |
 | `make test` / `make lint` | pytest (generator) / ruff |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |
@@ -40,6 +41,13 @@ Query: `docker compose exec trino trino --execute "..."`.
 - dbt: staging = `cdc_latest_event` macro, silver = `cdc_current` macro (row-level carry-forward on
   delete, skip create+delete in window, LSN guard, hash incl. is_deleted). Guard var checks
   with `execute` so parse/ls (Cosmos) work without vars.
+- Batch control lives in `pipeline/` (`ledger_pipeline`): window planning (pure, `windows.py`),
+  gate, `control.batches` I/O, pyiceberg EOD tags. dbt only receives the batch as vars and never
+  writes control. Airflow (milestone f) calls the same functions.
+- Windows are `[start, end)` at **millisecond** precision (= `_source_commit_ts`); `now` cut-offs round
+  UP to the ms. Closed days are refused; rerunning the latest COMMITTED day reuses its window and tags.
+- Gold reads silver `FOR VERSION AS OF 'eod_YYYY_MM_DD'`; consumers use `gold.accounts` /
+  `gold.account_balances` (latest COMMITTED, soft deletes filtered).
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
 - Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.
@@ -59,6 +67,8 @@ connector status, test output). Healthy ≠ correct: prove behavior (e.g. `make 
 - Config overrides on the shell (`VAR=x make up`) are ephemeral: the next `docker compose up`
   silently recreates services with `.env` values. Persist settings in `.env`.
 - `make env-check` (run by `make up`) fails if `.env` lacks keys from `.env.example`.
+- psycopg defaults to autocommit=False: then `conn.transaction()` is only a SAVEPOINT in one
+  outer transaction. The generator connects with autocommit=True.
 - Sink regex subscription finds new topics only on metadata refresh (override set to 10s).
 - Iceberg sink runtime isn't on Maven Central; built from ASF source in
   `infra/connect/Dockerfile` (~7 min cold, cached afterwards).

@@ -4,7 +4,7 @@
 name = "ledger-lakehouse"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["ledger-gen"]
+dependencies = ["ledger-gen", "ledger-pipeline"]
 
 [dependency-groups]
 dev = [
@@ -19,10 +19,11 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["generator"]
+members = ["generator", "pipeline"]
 
 [tool.uv.sources]
 ledger-gen = { workspace = true }
+ledger-pipeline = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -32,7 +33,7 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ledger_gen"]
+known-first-party = ["ledger_gen", "ledger_pipeline"]
 
 [tool.pytest.ini_options]
-testpaths = ["generator/tests"]
+testpaths = ["generator/tests", "pipeline/tests"]

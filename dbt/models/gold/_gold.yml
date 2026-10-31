@@ -1,0 +1,17 @@
+version: 2
+
+# Published datasets (macros/gold_publish.sql). Batch identity comes from the
+# pipeline as vars; consumers read the views in gold/consumer.
+models:
+  - name: accounts_full_daily
+    description: Complete EOD state of accounts per snapshot_date (incl. soft-deleted rows), from tag eod_N.
+  - name: accounts_incremental
+    description: Net changes per batch_date, op I/U/D, EOD(N) vs EOD(prev_batch_id) (ADR 0009).
+  - name: account_balances_full_daily
+    description: Complete EOD balances per (account_id, asset) per snapshot_date.
+  - name: account_balances_incremental
+    description: Net balance changes per batch_date (I/U).
+  - name: accounts
+    description: Consumer view. Live accounts as of the latest COMMITTED batch.
+  - name: account_balances
+    description: Consumer view. Balances as of the latest COMMITTED batch.

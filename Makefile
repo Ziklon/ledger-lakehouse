@@ -5,7 +5,7 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 TRINO   := $(COMPOSE) exec -T trino trino --output-format=ALIGNED
 
-.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic test lint
+.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic run-day batches test lint
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
@@ -57,6 +57,16 @@ seed: ## Initial load of the source ledger (once)  [START_DATE=, SEED=]
 traffic: ## One business day of traffic  DATE=YYYY-MM-DD [PACE=seconds SEED=]
 	@test -n "$(DATE)" || { echo "usage: make traffic DATE=2026-01-02"; exit 1; }
 	$(GEN) day --date $(DATE) --seed $(SEED) --pace-seconds $(or $(PACE),0)
+
+# --- publication ---------------------------------------------------------------
+PIPE := uv run --env-file .env ledger-pipeline
+
+run-day: ## Publish one business day  DATE=YYYY-MM-DD [CUTOFF=now|ISO]
+	@test -n "$(DATE)" || { echo "usage: make run-day DATE=2026-01-02 [CUTOFF=now]"; exit 1; }
+	$(PIPE) run-day --batch-id $(DATE) $(if $(CUTOFF),--cutoff $(CUTOFF))
+
+batches: ## Show control.batches
+	@$(TRINO) --execute "select batch_id, status, window_start, window_end, watermark_lsn, prev_batch_id, committed_at from lakehouse.control.batches order by batch_id"
 
 # --- quality -------------------------------------------------------------------
 test: ## Unit tests (generator)

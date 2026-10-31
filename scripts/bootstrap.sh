@@ -23,6 +23,9 @@ echo "== 2. Bronze DDL =="
 docker compose exec -T trino trino < infra/lakehouse/bronze.sql
 docker compose exec -T trino trino --execute "SHOW TABLES FROM lakehouse.bronze"
 
+echo "== 2b. Control DDL =="
+docker compose exec -T trino trino < infra/lakehouse/control.sql
+
 echo "== 3. Connectors =="
 for name in ledger-source bronze-sink; do
   code=$(curl -s -o /tmp/connect-resp.json -w '%{http_code}' -X PUT \

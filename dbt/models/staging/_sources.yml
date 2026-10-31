@@ -21,3 +21,10 @@ sources:
         freshness:
           warn_after: { count: 2, period: minute }
           error_after: { count: 10, period: minute }
+
+  - name: control
+    description: Publication control plane, written by ledger_pipeline (infra/lakehouse/control.sql).
+    database: lakehouse
+    schema: control
+    tables:
+      - name: batches
