@@ -38,6 +38,11 @@ def connect() -> psycopg.Connection:
         dbname=os.environ["PG_DATABASE"],
         user=os.environ["PG_USER"],
         password=os.environ["PG_PASSWORD"],
+        # autocommit=True is what makes `with conn.transaction()` a real
+        # BEGIN/COMMIT. With psycopg's default (False) the first query opens an
+        # implicit outer transaction and every conn.transaction() becomes a
+        # SAVEPOINT inside it: the whole day would commit once, at close.
+        autocommit=True,
     )
 
 
