@@ -11,6 +11,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make bootstrap` | idempotent: bronze DDL, `_iceberg_control` topic, PUT connectors |
 | `make seed` / `make traffic DATE=2026-01-02 [PACE=s]` | generator: initial load / one business day |
 | `make cdc-status` | connectors, replication-slot lag, sink lag, bronze freshness |
+| `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
 | `make test` / `make lint` | pytest (generator) / ruff |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |

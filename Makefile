@@ -5,7 +5,7 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 TRINO   := $(COMPOSE) exec -T trino trino --output-format=ALIGNED
 
-.PHONY: help env-check up bootstrap down ps logs cdc-status smoke clean seed traffic test lint
+.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic test lint
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
@@ -36,6 +36,9 @@ logs: ## Tail logs (make logs S=connect)
 
 cdc-status: ## CDC health: connectors, slot lag, sink lag, bronze freshness
 	./scripts/cdc-status.sh
+
+trino: ## Interactive Trino SQL shell (default catalog lakehouse, schema bronze)
+	$(COMPOSE) exec trino trino --catalog lakehouse --schema bronze
 
 smoke: ## End-to-end check: Trino -> REST catalog -> S3 write/read round trip
 	./scripts/smoke.sh
