@@ -34,6 +34,10 @@ class Settings:
     s3_secret_key: str
     dbt_dir: Path
     dbt_target: str
+    kafka_bootstrap: str
+    kafka_security_protocol: str
+    sink_group: str
+    cdc_topic_regex: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -55,7 +59,21 @@ class Settings:
             s3_secret_key=_env("S3_SECRET_KEY"),
             dbt_dir=Path(_env("PIPELINE_DBT_DIR", str(repo / "dbt"))),
             dbt_target=_env("DBT_TARGET", "local"),
+            kafka_bootstrap=_env(
+                "PIPELINE_KAFKA_BOOTSTRAP", f"localhost:{_env('HOST_KAFKA_PORT', '19092')}"
+            ),
+            kafka_security_protocol=_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+            # Consumer group of the bronze sink (Kafka Connect: "connect-<connector>")
+            sink_group=_env("CDC_SINK_GROUP", "connect-bronze-sink"),
+            cdc_topic_regex=_env("CDC_TOPIC_REGEX", r"^ledger\.app\..+"),
         )
+
+    def kafka_config(self) -> dict[str, str]:
+        """librdkafka config. AWS (MSK IAM) adds SASL settings here (Phase 3)."""
+        return {
+            "bootstrap.servers": self.kafka_bootstrap,
+            "security.protocol": self.kafka_security_protocol,
+        }
 
     def iceberg_catalog_properties(self) -> dict[str, str]:
         """pyiceberg catalog config. REST locally; glue in Phase 3 (config only)."""

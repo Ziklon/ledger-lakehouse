@@ -19,9 +19,9 @@ import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from . import control, gate, tags
+from . import steps
 from .config import Settings
-from .windows import BatchPlan, BatchRefused, ceil_ms, plan_batch
+from .windows import BatchPlan, BatchRefused, ceil_ms
 
 log = logging.getLogger("ledger_pipeline")
 
@@ -39,35 +39,19 @@ def dbt(s: Settings, command: str, args: list[str], plan: BatchPlan) -> None:
 
 
 def run_day(batch_id: date, cutoff: datetime | None, gate_timeout: int) -> None:
+    """Every step in order -- the same functions the Airflow DAG calls."""
     s = Settings.from_env()
-    conn = control.connect(s)
     t0 = time.monotonic()
-
-    plan = plan_batch(batch_id, control.list_batches(conn), now=datetime.now(UTC), cutoff=cutoff)
-    log.info(
-        "plan: batch %s window [%s, %s) prev %s%s",
-        plan.batch_id,
-        plan.window_start,
-        plan.window_end,
-        plan.prev_batch_id,
-        " (RERUN of committed day)" if plan.is_rerun else "",
-    )
-
-    if not plan.is_rerun:
-        hb = gate.wait_for_heartbeat(conn, plan.window_end, timeout_s=gate_timeout)
-        log.info("gate: heartbeat in bronze at %s >= cut-off", hb)
-
-    lsn, commit_ts = control.open_batch(conn, plan)
-    log.info("open_batch: RUNNING, watermark lsn=%s commit_ts=%s", lsn, commit_ts)
+    plan_d = steps.plan(batch_id.isoformat(), cutoff.isoformat() if cutoff else None)
+    plan = BatchPlan.from_dict(plan_d)
+    steps.completeness_gate(plan_d, timeout_s=gate_timeout)
+    steps.open_batch(plan_d)
 
     # Unit tests check LOGIC on fixtures (make test / CI), not the batch's data;
     # invariants run as their own step below.
     build = ["--exclude-resource-type", "unit_test", "--exclude", "tag:invariant"]
     dbt(s, "build", ["--select", "path:models/staging", "path:models/silver", *build], plan)
-
-    tagged = tags.tag_eod(s, plan.batch_id, committed=plan.is_rerun)
-    log.info("tag_eod: %s", tagged)
-
+    steps.tag_eod(plan_d)
     dbt(s, "build", ["--select", "path:models/gold", *build], plan)
 
     # Gate before publication: any failure leaves the batch RUNNING, so the
@@ -75,11 +59,9 @@ def run_day(batch_id: date, cutoff: datetime | None, gate_timeout: int) -> None:
     dbt(s, "test", ["--select", "tag:invariant"], plan)
     log.info("invariants: all passed")
 
-    counts, sums = control.dataset_stats(conn, plan.batch_id)
-    control.commit_batch(conn, plan.batch_id, counts, sums)
-    log.info(
-        "commit_batch: COMMITTED %s in %.0fs  %s", plan.batch_id, time.monotonic() - t0, counts
-    )
+    steps.commit_batch(plan_d)
+    steps.optimize(plan_d)
+    log.info("run-day %s done in %.0fs", plan.batch_id, time.monotonic() - t0)
 
 
 def parse_cutoff(value: str | None) -> datetime | None:

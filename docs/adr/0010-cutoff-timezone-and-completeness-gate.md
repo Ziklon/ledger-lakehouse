@@ -38,11 +38,21 @@ through `control.batches`. The planner refuses non-aligned cut-offs.
    Debezium writes the heartbeat table every `CDC_HEARTBEAT_INTERVAL_MS`, so the
    evidence exists on idle days. Logical decoding emits in commit order, so
    every earlier commit has already left Postgres.
-2. **Sink consumer lag ≈ 0 on every CDC topic** (group `connect-bronze-sink`,
-   every `ledger.app.*` topic assigned). Needed because the heartbeat travels
-   on its *own* topic: (1) alone proves Debezium sent everything, not that
-   the sink has committed every other topic. *(Implemented in milestone f; (d)
-   implements (1).)*
+2. **The sink has committed everything that existed at that moment**: snapshot
+   the end offset of every partition of every CDC topic (`ledger\.app\..+`),
+   then wait until the sink's consumer group (`connect-bronze-sink`) has
+   committed at least that far on each one. The Iceberg sink commits Kafka
+   offsets only after the data is committed to Iceberg, so this means "in bronze".
+   Needed because the heartbeat travels on its *own* topic: check (1) alone
+   proves Debezium *sent* everything, not that the sink *committed* every topic.
+   A partition with no committed offset (a topic the sink never subscribed to)
+   blocks too.
+
+   *Revised during milestone (f): the brief suggests "consumer lag ≈ 0". Measured,
+   the heartbeat topic **always** has lag ≥ 1 (a new heartbeat every 10 s), and in
+   production business traffic continues past midnight. "Lag == 0" would wait
+   forever. The snapshot formulation asks only for what existed when (1) proved
+   the cut-off had passed.*
 
 The gate uses only source-side timestamps compared with source-side timestamps,
 so a host/VM clock skew can't open the gate early.

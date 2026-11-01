@@ -47,6 +47,20 @@ class BatchPlan:
     prev_batch_id: date | None
     is_rerun: bool  # rerun of the latest COMMITTED batch
 
+    def to_dict(self) -> dict[str, str | bool | None]:
+        """JSON-safe form, e.g. an Airflow XCom between tasks."""
+        return {**self.dbt_vars(), "is_rerun": self.is_rerun}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> BatchPlan:
+        return cls(
+            batch_id=date.fromisoformat(d["batch_id"]),
+            window_start=datetime.fromisoformat(d["window_start"]),
+            window_end=datetime.fromisoformat(d["window_end"]),
+            prev_batch_id=date.fromisoformat(d["prev_batch_id"]) if d["prev_batch_id"] else None,
+            is_rerun=bool(d["is_rerun"]),
+        )
+
     def dbt_vars(self) -> dict[str, str | None]:
         """The ONLY batch identity dbt ever sees (never invocation_id)."""
         return {

@@ -13,6 +13,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make cdc-status` | connectors, replication-slot lag, sink lag, bronze freshness |
 | `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
 | `make run-day DATE=2026-01-02 [CUTOFF=now]` | publish one business day: gate → RUNNING → silver → EOD tags → gold → COMMITTED |
+| `make airflow-run DATE=2026-01-02 [CUTOFF=now]` | same publication through the Airflow DAG (trigger + wait, prints task states) |
 | `make batches` | show `control.batches` |
 | `make test` | pytest (generator, pipeline) + dbt unit tests (needs the stack) |
 | `make lint` | ruff + sqlfluff (trino, jinja templater, offline) |
@@ -22,7 +23,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make clean` | stop and delete volumes (images kept) |
 | `docker compose --profile ui up -d` | + Redpanda Console on :8088 |
 
-Host ports (see `.env.example`): Trino 18080, Postgres 15432, Kafka 19092,
+Host ports (see `.env.example`): Airflow UI 18090 (no login locally), Trino 18080, Postgres 15432, Kafka 19092,
 schema registry 18081, Connect 8083, MinIO 9000/9001, REST catalog 8181.
 Query: `docker compose exec trino trino --execute "..."`.
 
@@ -54,6 +55,14 @@ Query: `docker compose exec trino trino --execute "..."`.
   unit tests in `make test`/CI only. Prove new tests can FAIL (corrupt data / mutate the macro).
 - sqlfluff can't parse `FOR VERSION AS OF`: `at_eod` lives alone in `macros/time_travel.sql` so
   `.sqlfluff` overrides it at lint time. `noqa` must be alone in its comment.
+- Airflow (ADR 0014): DAG `airflow/dags/ledger_daily.py` is thin; logic in `ledger_pipeline.steps`.
+  Tasks run in `/opt/ledger-venv` (`@task.external_python`, from uv.lock); Cosmos calls its dbt.
+  The dbt project + manifest are BAKED into the image: dbt changes need `make up` (rebuild).
+  `LEDGER_SCHEDULE` = manual (local) | demo | daily (production). Manual runs: no data interval,
+  the names are undefined in templates (`is defined`). Cosmos asset emission off via
+  `RenderConfig(emit_datasets=False)` (the operator-level flag is overwritten).
+- Completeness gate = heartbeat ≥ cut-off in bronze + sink committed offsets ≥ end offsets
+  snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1).
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
 - Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.
@@ -72,6 +81,7 @@ connector status, test output). Healthy ≠ correct: prove behavior (e.g. `make 
 - Trino `map['k']` throws on missing keys; use `element_at(map, 'k')`.
 - Config overrides on the shell (`VAR=x make up`) are ephemeral: the next `docker compose up`
   silently recreates services with `.env` values. Persist settings in `.env`.
+- `.env` is SOURCED by scripts: quote values with spaces (`LEDGER_DEMO_CRON="*/3 * * * *"`).
 - `make env-check` (run by `make up`) fails if `.env` lacks keys from `.env.example`.
 - psycopg defaults to autocommit=False: then `conn.transaction()` is only a SAVEPOINT in one
   outer transaction. The generator connects with autocommit=True.

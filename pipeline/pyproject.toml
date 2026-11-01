@@ -6,6 +6,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "trino==0.340.0",
     "pyiceberg==0.12.0",
+    "confluent-kafka==2.16.1",
+    # the pipeline runs dbt (subprocess locally, Cosmos in Airflow): same pins everywhere
+    "dbt-core==1.11.16",
+    "dbt-trino==1.11.0",
 ]
 
 [project.scripts]

@@ -242,6 +242,110 @@ services:
     mem_limit: 3g
 
   # ---------------------------------------------------------------------------
+  # Airflow 3 (LocalExecutor) with its OWN metadata Postgres, separate from the
+  # ledger source. Airflow 3 split: api-server (UI + REST + the Execution API
+  # tasks report to), scheduler (runs tasks: LocalExecutor), dag-processor.
+  # No triggerer: no deferrable operators (sensors use mode=reschedule).
+  # ---------------------------------------------------------------------------
+  airflow-db:
+    <<: *restart
+    image: postgres:16.15
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+    volumes: [airflow-db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER} -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+
+  airflow-init:
+    &airflow-common
+    build:
+      context: .
+      dockerfile: infra/airflow/Dockerfile
+    image: ledger-lakehouse/airflow:local
+    command: ["airflow", "db", "migrate"]
+    depends_on:
+      airflow-db: { condition: service_healthy }
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__PARALLELISM: "4"
+      # Local only: no login (SimpleAuthManager, everyone admin). AWS: SSO/OIDC.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+      AIRFLOW_CONN_KAFKA_CONNECT: http://connect:8083
+      # ledger_pipeline inside the compose network (defaults are host ports)
+      PIPELINE_TRINO_HOST: trino
+      PIPELINE_TRINO_PORT: "8080"
+      PIPELINE_ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      PIPELINE_S3_ENDPOINT: ${S3_ENDPOINT}
+      PIPELINE_KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_SERVERS}
+      PIPELINE_DBT_DIR: /opt/airflow/dbt
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL}
+      ICEBERG_CATALOG_TYPE: ${ICEBERG_CATALOG_TYPE}
+      S3_REGION: ${S3_REGION}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      DBT_TARGET: docker
+      LEDGER_SCHEDULE: ${LEDGER_SCHEDULE}
+      LEDGER_DEMO_CRON: ${LEDGER_DEMO_CRON}
+      LEDGER_DEMO_START_DATE: ${LEDGER_DEMO_START_DATE}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - airflow-logs:/opt/airflow/logs
+    restart: "no"
+
+  airflow-apiserver:
+    <<: [*airflow-common, *restart]
+    command: ["airflow", "api-server"]
+    depends_on: &airflow-deps
+      airflow-init: { condition: service_completed_successfully }
+    ports: ["${HOST_AIRFLOW_PORT}:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    mem_limit: 1g
+
+  airflow-scheduler:
+    <<: [*airflow-common, *restart]
+    command: ["airflow", "scheduler"]
+    depends_on:
+      <<: *airflow-deps
+      airflow-apiserver: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local"]
+      interval: 15s
+      timeout: 20s
+      retries: 20
+      start_period: 30s
+    mem_limit: 1536m   # LocalExecutor: tasks (dbt, pyiceberg) run here
+
+  airflow-dag-processor:
+    <<: [*airflow-common, *restart]
+    command: ["airflow", "dag-processor"]
+    depends_on: *airflow-deps
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --local"]
+      interval: 15s
+      timeout: 20s
+      retries: 20
+      start_period: 30s
+    mem_limit: 768m
+
+  # ---------------------------------------------------------------------------
   # Optional: broker/registry/connect UI.  docker compose --profile ui up -d
   # ---------------------------------------------------------------------------
   redpanda-console:
@@ -266,6 +370,8 @@ services:
     mem_limit: 256m
 
 volumes:
+  airflow-db-data:
+  airflow-logs:
   pg-data:
   redpanda-data:
   minio-data:

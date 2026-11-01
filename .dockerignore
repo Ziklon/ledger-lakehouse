@@ -1,0 +1,13 @@
+# Build context for infra/airflow/Dockerfile is the repo root: send only what it needs.
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+.git
+.env
+.lavish
+dbt/target
+dbt/dbt_packages
+dbt/logs
+airflow/logs
+infra/connect
