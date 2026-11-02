@@ -5,7 +5,7 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 TRINO   := $(COMPOSE) exec -T trino trino --output-format=ALIGNED
 
-.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic run-day airflow-run batches test lint
+.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic run-day airflow-run demo batches test lint
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
@@ -68,6 +68,9 @@ run-day: ## Publish one business day  DATE=YYYY-MM-DD [CUTOFF=now|ISO]
 airflow-run: ## Publish one business day through Airflow  DATE=YYYY-MM-DD [CUTOFF=now|ISO]
 	@test -n "$(DATE)" || { echo "usage: make airflow-run DATE=2026-01-02 [CUTOFF=now]"; exit 1; }
 	./scripts/airflow-run.sh $(DATE) $(CUTOFF)
+
+demo: ## RESETS the stack, then seed + DAYS=3 business days through Airflow, printing evidence
+	./scripts/demo.sh
 
 batches: ## Show control.batches
 	@$(TRINO) --execute "select batch_id, status, window_start, window_end, watermark_lsn, prev_batch_id, committed_at from lakehouse.control.batches order by batch_id"

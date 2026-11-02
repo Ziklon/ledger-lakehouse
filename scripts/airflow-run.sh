@@ -11,6 +11,8 @@ AF=(docker compose exec -T airflow-scheduler airflow)
 RUN_ID="manual__${DATE}__$(date -u +%Y%m%dT%H%M%S)"
 CONF=$(printf '{"batch_id": "%s", "cutoff": %s}' "$DATE" "$( [ -n "$CUTOFF" ] && printf '"%s"' "$CUTOFF" || echo null)")
 
+# A fresh stack needs the dag-processor's first parse before the DAG exists.
+until "${AF[@]}" dags list -o plain 2>/dev/null | grep -q '^ledger_daily'; do sleep 3; done
 "${AF[@]}" dags unpause ledger_daily >/dev/null
 "${AF[@]}" dags trigger ledger_daily --run-id "$RUN_ID" --conf "$CONF" >/dev/null
 echo "triggered $RUN_ID conf=$CONF"

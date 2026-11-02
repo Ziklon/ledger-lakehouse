@@ -7,7 +7,6 @@ select
     asset,
     status,
     opened_at,
-    updated_at,
     snapshot_date
 from {{ ref('accounts_full_daily') }}
 where

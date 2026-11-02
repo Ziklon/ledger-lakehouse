@@ -92,7 +92,9 @@ unit_tests:
   - name: unchanged_live_event_emits_nothing
     description: >
       Negative control for the test above: a live event with identical values
-      (e.g. a status flap within the window) hashes equal -> no write.
+      (e.g. a replayed event) hashes equal -> no write. A real status flap also
+      moves updated_at, so silver DOES write it; gold hashes published columns
+      only and publishes nothing (docs/adr/0008).
     model: accounts_current
     overrides:
       macros: {is_incremental: true}

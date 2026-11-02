@@ -16,6 +16,13 @@
     alive(N) and alive(N-1) and hash differs    -> U
     not alive(N) and alive(N-1)                 -> D
   so active(FULL N-1) + INCREMENTAL N = active(FULL N)   (checked in milestone e).
+
+  Gold computes its OWN row_hash over the PUBLISHED columns (docs/adr/0008).
+  Silver's hash includes bookkeeping columns (updated_at) because silver is an
+  exact mirror; gold publishes business columns only. So a same-day flap
+  (ACTIVE -> FROZEN -> ACTIVE, updated_at moved) changes silver but publishes
+  nothing. Every published column is in the hash, so the equation above is
+  exact on values, not just on keys: no published column may be left out.
 #}
 
 {#- Rerun idempotency: wipe this batch's partition before appending it again.
@@ -35,6 +42,11 @@ select 1
 {%- endif -%}
 {%- endmacro %}
 
+{#- Hash of exactly what is published (+ is_deleted for soft-delete entities). -#}
+{% macro _gold_hash(columns, soft_delete) -%}
+{{ dbt_utils.generate_surrogate_key(columns + (['is_deleted'] if soft_delete else [])) }}
+{%- endmacro %}
+
 {% macro _alive(alias, key_cols, soft_delete) -%}
 ({{ alias }}.{{ key_cols[0] }} is not null{% if soft_delete %} and not {{ alias }}.is_deleted{% endif %})
 {%- endmacro %}
@@ -51,8 +63,7 @@ select
     {%- if soft_delete %}is_deleted,
     deleted_at,
     {% endif -%}
-    row_hash,
-    _batch_id as last_changed_batch_id,
+    {{ _gold_hash(columns, soft_delete) }} as row_hash,
     cast('{{ var("batch_id") }}' as date) as snapshot_date
 from {{ at_eod(current_model, var('batch_id')) }}
 {% endmacro %}
@@ -62,15 +73,16 @@ from {{ at_eod(current_model, var('batch_id')) }}
 {{- _require_batch() -}}
 {%- set key_cols = [key] if key is string else key -%}
 {%- set prev = var('prev_batch_id') -%}
-{%- set cols = key_cols + columns + (['is_deleted'] if soft_delete else []) + ['row_hash'] -%}
+{%- set src_cols = key_cols + columns + (['is_deleted'] if soft_delete else []) -%}
+{%- set cols = src_cols + ['row_hash'] -%}
 
 with curr as (
-    select {{ cols | join(', ') }}
+    select {{ src_cols | join(', ') }}, {{ _gold_hash(columns, soft_delete) }} as row_hash
     from {{ at_eod(current_model, var('batch_id')) }}
 ),
 
 prev as (
-    select {{ cols | join(', ') }}
+    select {{ src_cols | join(', ') }}, {{ _gold_hash(columns, soft_delete) }} as row_hash
     {% if prev is none -%}
     from {{ ref(current_model) }} where false      -- first batch: nothing published before
     {%- else -%}

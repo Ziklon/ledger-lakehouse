@@ -14,6 +14,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make trino` | interactive Trino SQL shell (catalog lakehouse, schema bronze) |
 | `make run-day DATE=2026-01-02 [CUTOFF=now]` | publish one business day: gate → RUNNING → silver → EOD tags → gold → COMMITTED |
 | `make airflow-run DATE=2026-01-02 [CUTOFF=now]` | same publication through the Airflow DAG (trigger + wait, prints task states) |
+| `make demo` | RESETS volumes, seed + 3 days through Airflow, prints evidence (~14 min); `scripts/demo-report.sh DATE` for one day |
 | `make batches` | show `control.batches` |
 | `make test` | pytest (generator, pipeline) + dbt unit tests (needs the stack) |
 | `make lint` | ruff + sqlfluff (trino, jinja templater, offline) |
@@ -64,6 +65,9 @@ Query: `docker compose exec trino trino --execute "..."`.
 - Completeness gate = heartbeat ≥ cut-off in bronze + sink committed offsets ≥ end offsets
   snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1).
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
+- Hashes: silver `row_hash` = all mirrored columns (incl. updated_at) + is_deleted; gold computes its
+  OWN hash over exactly the PUBLISHED columns (`_gold_hash`), so flaps publish nothing. Every published
+  column must be in the gold hash (ADR 0008). updated_at is not published.
 - Ledger entries are immutable; corrections are reversal transactions (`reverses_entry_id`).
 - Generator: pure planner (`planner.py`) + I/O shell (`db.py`); one operation = one DB txn.
 - SQL: explicit column lists, never `SELECT *`. sqlfluff (trino dialect). Python: uv + ruff.

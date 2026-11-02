@@ -28,9 +28,22 @@ business columns. How do we detect real changes?
 
 ## Decision outcome
 
-Chosen: **option 1**. Implemented in `macros/cdc_current.sql`; the same
-`row_hash` is reused by gold (INCREMENTAL = hash diff of EOD(N) vs EOD(N-1))
-and by the invariant `checksum(row_hash)`.
+Chosen: **option 1**, at two levels with **different column sets**:
+
+| | Hashed columns | Why |
+|---|---|---|
+| silver `*_current` (`macros/cdc_current.sql`) | every mirrored source column incl. `updated_at`, + `is_deleted` | silver is an exact mirror (reconciliation compares it with the source) |
+| gold FULL/INCREMENTAL (`macros/gold_publish.sql`) | exactly the **published** columns, + `is_deleted` | INCREMENTAL = hash diff of EOD(N) vs EOD(N-1); the invariant uses `checksum(row_hash)` |
+
+*Revised in milestone (g).* The first version reused silver's hash in gold.
+The clean `make demo` run showed a same-day flap (ACTIVE→FROZEN→ACTIVE) being
+published as `U`: the source sets `updated_at = now()` on every update, so the
+net row *did* change, but only in a bookkeeping column. Gold now publishes
+business columns only (`updated_at` is not published) and hashes exactly what
+it publishes. Rule: **every published column is in the gold hash**, otherwise
+`FULL(N-1) + INCREMENTAL(N) = FULL(N)` would hold on hashes but not on values.
+For the same reason `last_changed_batch_id` (silver `_batch_id`, moved by a flap)
+is no longer published; lineage stays in silver.
 
 `is_deleted` is in the hash because deletes carry business columns forward
 unchanged (ADR 0006): without it, the old and new hashes are equal and a
@@ -41,7 +54,8 @@ is deliberately excluded: it changes without a business change.
 
 ### Consequences
 
-* Good: net-change semantics (a flap produces no write); deletes detected.
+* Good: net-change semantics for consumers (a flap publishes nothing); deletes detected.
+* Good: silver stays an exact mirror (a flap updates `updated_at` there).
 * Good: idempotent — verified: rerunning a window merges 0 rows and leaves
   `checksum(row_hash)` identical.
 * Good: one column powers merge filtering, INCREMENTAL diffs and invariants.
@@ -56,6 +70,12 @@ Option 3 rejected: publishes noise (flaps) as changes.
 
 ## Confirmation
 
-Milestone (c): the flap keys (7, 12) end ACTIVE with no extra write; a
-later-window delete (key 43) is merged; reruns of W2 and of the older W1
-merge 0 rows (fingerprint unchanged).
+Milestone (c): a later-window delete (key 43) is merged; reruns of W2 and of
+the older W1 merge 0 rows (fingerprint unchanged). *Correction:* (c) also
+reported "flap keys end ACTIVE with no extra write". That held only for fixtures
+with an unchanged `updated_at`, which real source updates never produce.
+
+Milestone (g), `make demo` prints every key updated several times in one
+window, its status path, and what gold published. Before the fix: flap
+accounts 7 and 27 (`FROZEN -> ACTIVE`) were published as `U`. After it, flaps publish
+nothing, and `FROZEN -> ACTIVE -> FROZEN` publishes `U` (status really changed).

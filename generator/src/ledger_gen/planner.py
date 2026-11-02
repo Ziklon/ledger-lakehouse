@@ -259,8 +259,9 @@ class Planner:
         self.reserved.discard(acct.account_id)
 
     def sc_status_flap(self) -> Scenario:
-        """ACTIVE -> FROZEN -> ACTIVE in one day: a net NO-OP. Must not appear
-        in the day's INCREMENTAL (net change, hash unchanged)."""
+        """ACTIVE -> FROZEN -> ACTIVE in one day: a net no-op for consumers.
+        Silver mirrors it (updated_at moved); gold's hash covers published
+        columns only, so it must not appear in the day's INCREMENTAL."""
         acct = self._reserve(self.rng.choice(self._available()))
         self._set_status(acct, "FROZEN", "flap_freeze")
         yield
