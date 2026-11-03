@@ -58,12 +58,15 @@ Query: `docker compose exec trino trino --execute "..."`.
   `.sqlfluff` overrides it at lint time. `noqa` must be alone in its comment.
 - Airflow (ADR 0014): DAG `airflow/dags/ledger_daily.py` is thin; logic in `ledger_pipeline.steps`.
   Tasks run in `/opt/ledger-venv` (`@task.external_python`, from uv.lock); Cosmos calls its dbt.
-  The dbt project + manifest are BAKED into the image: dbt changes need `make up` (rebuild).
+  The dbt project + manifest AND `ledger_pipeline` are BAKED into the image: dbt or pipeline
+  changes need `make up` (rebuild) before Airflow runs them (`make run-day` uses the host code).
   `LEDGER_SCHEDULE` = manual (local) | demo | daily (production). Manual runs: no data interval,
   the names are undefined in templates (`is defined`). Cosmos asset emission off via
   `RenderConfig(emit_datasets=False)` (the operator-level flag is overwritten).
 - Completeness gate = heartbeat ≥ cut-off in bronze + sink committed offsets ≥ end offsets
-  snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1).
+  snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1) + a bronze heartbeat
+  with `_lsn` > source `pg_current_wal_lsn()` read after that (the sink commits source offsets
+  BEFORE its Iceberg commit: offsets prove "read", not "visible").
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Hashes: silver `row_hash` = all mirrored columns (incl. updated_at) + is_deleted; gold computes its
   OWN hash over exactly the PUBLISHED columns (`_gold_hash`), so flaps publish nothing. Every published

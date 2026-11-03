@@ -194,7 +194,7 @@ publishes nothing, because gold hashes only the columns it publishes.
 | Affected-keys **recompute** of balances | delta arithmetic | self-correcting; output changes ≠ input changes | [0007](docs/adr/0007-affected-keys-recompute-for-aggregates.md) |
 | Net daily changes | every change event | the FULL + INC equation is exact and checkable | [0009](docs/adr/0009-net-daily-changes-vs-every-change.md) |
 | FULL as tags **and** partitions | either alone | tags freeze the input (rerun-safe); partitions serve any engine | [0011](docs/adr/0011-daily-full-as-tags-and-partitions.md) |
-| Cut-off 00:00 UTC + two-part completeness gate | wait a fixed delay | provable completeness, works on idle days | [0010](docs/adr/0010-cutoff-timezone-and-completeness-gate.md) |
+| Cut-off 00:00 UTC + three-part completeness gate | wait a fixed delay | provable completeness, works on idle days | [0010](docs/adr/0010-cutoff-timezone-and-completeness-gate.md) |
 | Control table | Write-Audit-Publish branches | multi-table publication, engine-agnostic, audit trail | [0012](docs/adr/0012-control-table-vs-write-audit-publish.md) |
 | Airflow 3 + Cosmos, batch identity from the pipeline | Dagster; dbt `invocation_id` | per-model tasks and tests; one batch identity for ~20 dbt invocations | [0014](docs/adr/0014-airflow-cosmos-and-batch-identity.md) |
 | dbt-trino | Spark | set-based SQL on small daily deltas; Trino is needed anyway | [0015](docs/adr/0015-dbt-trino-vs-spark.md) |
@@ -207,11 +207,11 @@ Local object store: [0003](docs/adr/0003-object-store.md).
 
 | Concern | Implementation | Evidence |
 |---|---|---|
-| Exactly-once into bronze | Iceberg sink coordinator commits data + offsets together | Connect SIGKILLed mid-traffic: 254 = 254 entries, distinct `(pk, _lsn)` (milestone b) |
+| Exactly-once into bronze | Iceberg sink: worker commits file list + source offsets in one Kafka transaction; coordinator's Iceberg commit is idempotent (keyed by control-topic offsets) | Connect SIGKILLed mid-traffic: 254 = 254 entries, distinct `(pk, _lsn)` (milestone b) |
 | Delete events without before-images | key-only deletes; row-level carry-forward; skip create+delete in window | unit tests incl. default-filled delete payload (`customer_id=0`), mutation-tested |
 | Idempotent, rerun-safe batches | windows from `control.batches`; EOD tags; partition overwrite; LSN guard | rerun → identical checksums, tags unchanged; rerun of an older window merges 0 rows |
 | No silent gaps or overlaps | window_start = last COMMITTED window_end; ms-aligned boundaries; missed days caught up | unit tests; contiguity query over all batches |
-| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
+| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot + heartbeat beyond the source LSN committed in Iceberg | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
 | Consistent outputs | FULL and INCREMENTAL from the same tag; invariant step before COMMITTED | `FULL(N-1)+INC(N)=FULL(N)` every demo day (rows + checksum) |
 | Ledger correctness | double entry + independent recompute from bronze | each invariant shown to FAIL on corrupted data |
 | Failure containment | failed step → batch stays RUNNING, consumers keep the previous day, no Asset events, newer batches refused | rehearsed: one-legged transaction → fix → rerun → COMMITTED |

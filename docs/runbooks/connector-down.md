@@ -3,7 +3,10 @@
 **Symptom.** In the `ledger_daily` run, `check_connectors` stays in
 `up_for_reschedule` (it pokes the Kafka Connect REST API every 15 s and times
 out after 10 min), or `completeness_gate` times out with
-`latest heartbeat in bronze … < cut-off` / `sink group … behind`.
+`latest heartbeat in bronze … < cut-off` / `sink behind: …`.
+A third message, `no heartbeat beyond source lsn … (sink read but not committed to
+Iceberg)`, means the connectors run but Iceberg commits fail: check the REST catalog
+and MinIO (`make logs S=iceberg-rest`, `make logs S=connect | grep -i commit`).
 
 **Impact.** Nothing is published, and nothing is opened: no `control.batches` row
 exists for the day, and consumers keep the previous COMMITTED day. Source changes

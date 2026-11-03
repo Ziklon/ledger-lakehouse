@@ -55,10 +55,10 @@ def completeness_gate(plan_d: dict, timeout_s: int = 300) -> None:
         log.info("gate: skipped (rerun of a COMMITTED day: window already proven complete)")
         return
     s = Settings.from_env()
-    hb = gate.wait_for_heartbeat(control.connect(s), p.window_end, timeout_s=timeout_s)
-    log.info("gate 1/2: heartbeat in bronze at %s >= cut-off %s", hb, p.window_end)
-    topics = gate.wait_for_sink(s, timeout_s=timeout_s)
-    log.info("gate 2/2: sink %s caught up on %s", s.sink_group, topics)
+    result = gate.run_gate(
+        p.window_end, gate.Probes.live(s, control.connect(s)), timeout_s=timeout_s
+    )
+    log.info("gate passed: %s (sink group %s)", result, s.sink_group)
 
 
 def open_batch(plan_d: dict) -> str:
