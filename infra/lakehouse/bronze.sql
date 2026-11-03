@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS lakehouse.bronze.assets_cdc (
     _lsn                bigint,
     _source_commit_ts   timestamp(6) with time zone,
     _ingested_at        timestamp(6) with time zone,
-    _cdc_table          varchar
+    _cdc_table          varchar,
+    _kafka_partition    integer,  -- exact lineage + completeness gate (ADR 0010)
+    _kafka_offset       bigint,
+    _tx_id              bigint    -- Postgres transaction id (Debezium source.txId)
 )
 WITH (format_version = 2, partitioning = ARRAY['day(_source_commit_ts)']);
 
@@ -41,7 +44,10 @@ CREATE TABLE IF NOT EXISTS lakehouse.bronze.accounts_cdc (
     _lsn                bigint,
     _source_commit_ts   timestamp(6) with time zone,
     _ingested_at        timestamp(6) with time zone,
-    _cdc_table          varchar
+    _cdc_table          varchar,
+    _kafka_partition    integer,  -- exact lineage + completeness gate (ADR 0010)
+    _kafka_offset       bigint,
+    _tx_id              bigint    -- Postgres transaction id (Debezium source.txId)
 )
 WITH (format_version = 2, partitioning = ARRAY['day(_source_commit_ts)']);
 
@@ -60,7 +66,10 @@ CREATE TABLE IF NOT EXISTS lakehouse.bronze.ledger_entries_cdc (
     _lsn                bigint,
     _source_commit_ts   timestamp(6) with time zone,
     _ingested_at        timestamp(6) with time zone,
-    _cdc_table          varchar
+    _cdc_table          varchar,
+    _kafka_partition    integer,  -- exact lineage + completeness gate (ADR 0010)
+    _kafka_offset       bigint,
+    _tx_id              bigint    -- Postgres transaction id (Debezium source.txId)
 )
 WITH (format_version = 2, partitioning = ARRAY['day(_source_commit_ts)']);
 
@@ -73,6 +82,25 @@ CREATE TABLE IF NOT EXISTS lakehouse.bronze.cdc_heartbeat_cdc (
     _lsn                bigint,
     _source_commit_ts   timestamp(6) with time zone,
     _ingested_at        timestamp(6) with time zone,
-    _cdc_table          varchar
+    _cdc_table          varchar,
+    _kafka_partition    integer,  -- exact lineage + completeness gate (ADR 0010)
+    _kafka_offset       bigint,
+    _tx_id              bigint    -- Postgres transaction id (Debezium source.txId)
 )
 WITH (format_version = 2, partitioning = ARRAY['day(_source_commit_ts)']);
+
+-- Migration of tables created before Phase 2 (milestone h). Additive only, and
+-- applied BEFORE the sink config that fills these columns: the sink silently
+-- drops record fields the table doesn't have. Rows written earlier keep NULLs.
+ALTER TABLE lakehouse.bronze.assets_cdc ADD COLUMN IF NOT EXISTS _kafka_partition integer;
+ALTER TABLE lakehouse.bronze.assets_cdc ADD COLUMN IF NOT EXISTS _kafka_offset bigint;
+ALTER TABLE lakehouse.bronze.assets_cdc ADD COLUMN IF NOT EXISTS _tx_id bigint;
+ALTER TABLE lakehouse.bronze.accounts_cdc ADD COLUMN IF NOT EXISTS _kafka_partition integer;
+ALTER TABLE lakehouse.bronze.accounts_cdc ADD COLUMN IF NOT EXISTS _kafka_offset bigint;
+ALTER TABLE lakehouse.bronze.accounts_cdc ADD COLUMN IF NOT EXISTS _tx_id bigint;
+ALTER TABLE lakehouse.bronze.ledger_entries_cdc ADD COLUMN IF NOT EXISTS _kafka_partition integer;
+ALTER TABLE lakehouse.bronze.ledger_entries_cdc ADD COLUMN IF NOT EXISTS _kafka_offset bigint;
+ALTER TABLE lakehouse.bronze.ledger_entries_cdc ADD COLUMN IF NOT EXISTS _tx_id bigint;
+ALTER TABLE lakehouse.bronze.cdc_heartbeat_cdc ADD COLUMN IF NOT EXISTS _kafka_partition integer;
+ALTER TABLE lakehouse.bronze.cdc_heartbeat_cdc ADD COLUMN IF NOT EXISTS _kafka_offset bigint;
+ALTER TABLE lakehouse.bronze.cdc_heartbeat_cdc ADD COLUMN IF NOT EXISTS _tx_id bigint;

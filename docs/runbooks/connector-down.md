@@ -4,9 +4,11 @@
 `up_for_reschedule` (it pokes the Kafka Connect REST API every 15 s and times
 out after 10 min), or `completeness_gate` times out with
 `latest heartbeat in bronze … < cut-off` / `sink behind: …`.
-A third message, `no heartbeat beyond source lsn … (sink read but not committed to
-Iceberg)`, means the connectors run but Iceberg commits fail: check the REST catalog
-and MinIO (`make logs S=iceberg-rest`, `make logs S=connect | grep -i commit`).
+A third message, `read but not in bronze yet: <topic>[p] bronze=… required=…`, means
+the connectors run but that table's Iceberg commits fail: check the REST catalog and
+MinIO (`make logs S=iceberg-rest`, `make logs S=connect | grep -i -E "commit|exception"`).
+During the `_kafka_offset` migration it can read `no heartbeat beyond source lsn …`
+instead (fallback, ADR 0010); same checks.
 
 **Impact.** Nothing is published, and nothing is opened: no `control.batches` row
 exists for the day, and consumers keep the previous COMMITTED day. Source changes

@@ -28,14 +28,14 @@
 
   "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
   "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
-  "transforms.unwrap.add.fields": "op,lsn,source.ts_ms",
+  "transforms.unwrap.add.fields": "op,lsn,txId,source.ts_ms",
 
   "transforms.commitTs.type": "org.apache.kafka.connect.transforms.TimestampConverter$Value",
   "transforms.commitTs.field": "__source_ts_ms",
   "transforms.commitTs.target.type": "Timestamp",
 
   "transforms.rename.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
-  "transforms.rename.renames": "__op:_op,__lsn:_lsn,__source_ts_ms:_source_commit_ts",
+  "transforms.rename.renames": "__op:_op,__lsn:_lsn,__txId:_tx_id,__source_ts_ms:_source_commit_ts",
   "transforms.rename.exclude": "__deleted",
 
   "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
@@ -45,6 +45,8 @@
   "transforms.meta.type": "org.apache.kafka.connect.transforms.InsertField$Value",
   "transforms.meta.topic.field": "_cdc_table",
   "transforms.meta.timestamp.field": "_ingested_at",
+  "transforms.meta.partition.field": "_kafka_partition",
+  "transforms.meta.offset.field": "_kafka_offset",
 
   "errors.tolerance": "none"
 }

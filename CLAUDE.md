@@ -37,6 +37,9 @@ Query: `docker compose exec trino trino --execute "..."`.
 - Topics are never auto-created (`auto_create_topics_enabled=false`).
 - Bronze is an append-only change log; silver mirrors; gold publishes (see docs/adr).
   Tables: `lakehouse.bronze.<table>_cdc` (single-level namespaces: Glue has no nesting).
+  Metadata columns: `_op _lsn _source_commit_ts _ingested_at _cdc_table _kafka_partition
+  _kafka_offset _tx_id`. New bronze columns = additive DDL (`ALTER … IF NOT EXISTS`) applied
+  BEFORE the sink config that fills them (the sink silently drops unknown fields).
   Bronze DDL is explicit (`infra/lakehouse/bronze.sql`) and applied BEFORE the sink starts.
 - Order CDC events by `_lsn`, never by `_source_commit_ts` (ms precision, ties are common).
 - Delete events (`_op='d'`) carry only the key; NOT NULL columns arrive as type
@@ -64,9 +67,11 @@ Query: `docker compose exec trino trino --execute "..."`.
   the names are undefined in templates (`is defined`). Cosmos asset emission off via
   `RenderConfig(emit_datasets=False)` (the operator-level flag is overwritten).
 - Completeness gate = heartbeat ≥ cut-off in bronze + sink committed offsets ≥ end offsets
-  snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1) + a bronze heartbeat
-  with `_lsn` > source `pg_current_wal_lsn()` read after that (the sink commits source offsets
-  BEFORE its Iceberg commit: offsets prove "read", not "visible").
+  snapshotted at that moment (never "lag == 0": heartbeats keep it ≥ 1) + every partition's
+  record `end - 1` present in its bronze table (`_kafka_offset`). The sink commits source offsets
+  BEFORE its Iceberg commit, one commit per table: offsets prove "read", not "visible".
+  Partitions with no event since the `_kafka_offset` migration (`control.bronze_offset_baseline`)
+  fall back to a heartbeat with `_lsn` > source `pg_current_wal_lsn()` (ADR 0010).
 - Freshness: pipeline health = heartbeat (strict); business tables only a soft 12h warning.
 - Hashes: silver `row_hash` = all mirrored columns (incl. updated_at) + is_deleted; gold computes its
   OWN hash over exactly the PUBLISHED columns (`_gold_hash`), so flaps publish nothing. Every published

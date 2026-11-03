@@ -86,7 +86,18 @@ def main(argv: list[str] | None = None) -> int:
         help="ISO timestamp or 'now' (demo). Default: 00:00 UTC after the business date",
     )
     r.add_argument("--gate-timeout", type=int, default=300)
+    sub.add_parser(
+        "record-offset-baseline",
+        help="migration: first Kafka offset per partition that bronze stores (bootstrap)",
+    )
     args = p.parse_args(argv)
+
+    if args.cmd == "record-offset-baseline":
+        from . import control, gate
+
+        s = Settings.from_env()
+        gate.record_offset_baseline(s, control.connect(s))
+        return 0
 
     try:
         run_day(args.batch_id, parse_cutoff(args.cutoff), args.gate_timeout)

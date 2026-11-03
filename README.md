@@ -211,7 +211,7 @@ Local object store: [0003](docs/adr/0003-object-store.md).
 | Delete events without before-images | key-only deletes; row-level carry-forward; skip create+delete in window | unit tests incl. default-filled delete payload (`customer_id=0`), mutation-tested |
 | Idempotent, rerun-safe batches | windows from `control.batches`; EOD tags; partition overwrite; LSN guard | rerun → identical checksums, tags unchanged; rerun of an older window merges 0 rows |
 | No silent gaps or overlaps | window_start = last COMMITTED window_end; ms-aligned boundaries; missed days caught up | unit tests; contiguity query over all batches |
-| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot + heartbeat beyond the source LSN committed in Iceberg | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
+| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot + every partition's last offset present in its bronze table (`_kafka_offset`) | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
 | Consistent outputs | FULL and INCREMENTAL from the same tag; invariant step before COMMITTED | `FULL(N-1)+INC(N)=FULL(N)` every demo day (rows + checksum) |
 | Ledger correctness | double entry + independent recompute from bronze | each invariant shown to FAIL on corrupted data |
 | Failure containment | failed step → batch stays RUNNING, consumers keep the previous day, no Asset events, newer batches refused | rehearsed: one-legged transaction → fix → rerun → COMMITTED |
