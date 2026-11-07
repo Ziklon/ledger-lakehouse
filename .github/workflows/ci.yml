@@ -1,0 +1,148 @@
+# CI ladder (ADR 0017): cheap checks on every push, the full stack on PRs and main.
+#   lint, unit          no stack                               every push
+#   dbt                 Trino + catalog only; unit tests       every push (+ Slim CI on PRs)
+#   connect-image       Connect worker -> GHCR (public)        PRs to main, pushes to main
+#   integration         fresh compose stack, 2 business days   PRs to main, pushes to main
+# Every action is pinned by commit SHA (tag in the comment).
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.28"
+  CONNECT_IMAGE: ghcr.io/ziklon/ledger-lakehouse-connect
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked
+      - run: make lint
+
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked
+      # generator planner, batch windows, completeness gate against a simulated sink
+      - run: uv run pytest -q
+
+  dbt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout the base branch (Slim CI compares against its manifest)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: .slim-ci-base
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked
+      - run: cp .env.example .env
+      - run: make ci-dbt
+        env:
+          SLIM_CI_BASE: ${{ github.event_name == 'pull_request' && format('{0}/.slim-ci-base', github.workspace) || '' }}
+
+  connect-image:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The Iceberg sink is built from ASF source (~7 min cold). The registry cache
+      # keeps every stage, so only changed layers rebuild.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: infra/connect
+          push: true
+          tags: |
+            ${{ env.CONNECT_IMAGE }}:sha-${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}:main', env.CONNECT_IMAGE) || '' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.CONNECT_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.CONNECT_IMAGE }}:buildcache,mode=max
+
+  integration:
+    needs: [lint, unit, dbt, connect-image]
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Connect image (exactly the one connect-image pushed)
+        run: |
+          docker pull "$CONNECT_IMAGE:sha-$GITHUB_SHA"
+          docker tag "$CONNECT_IMAGE:sha-$GITHUB_SHA" ledger-lakehouse/connect:local
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Airflow bakes the dbt project and ledger_pipeline, so it changes with most
+      # PRs: built here (GitHub Actions cache), never published.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: infra/airflow/Dockerfile
+          load: true
+          tags: ledger-lakehouse/airflow:local
+          cache-from: type=gha,scope=airflow
+          cache-to: type=gha,scope=airflow,mode=max
+      - name: CI settings (.env from .env.example, 10 s sink commits)
+        run: |
+          cp .env.example .env
+          sed -i 's/^BRONZE_COMMIT_INTERVAL_MS=.*/BRONZE_COMMIT_INTERVAL_MS=10000/' .env
+          grep -E '^(BRONZE_COMMIT_INTERVAL_MS|CDC_HEARTBEAT_INTERVAL_MS|LEDGER_SCHEDULE)=' .env
+          df -h / | tail -1
+      - run: make ci-integration
+        env:
+          CI_NO_BUILD: "1"
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-logs
+          path: ci-logs/
+          retention-days: 7

@@ -1,5 +1,7 @@
 # Ledger Lakehouse
 
+[![ci](https://github.com/Ziklon/ledger-lakehouse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ziklon/ledger-lakehouse/actions/workflows/ci.yml)
+
 **A CDC-to-Iceberg finance data platform that publishes reconciled daily FULL
 and INCREMENTAL datasets.**
 
@@ -92,7 +94,13 @@ make trino                                # SQL shell (lakehouse catalog)
 
 `make run-day DATE=… CUTOFF=now` runs the same steps without Airflow (same
 functions). `make test` (pytest + dbt unit tests) and `make lint` (ruff +
-sqlfluff) are what CI runs.
+sqlfluff) check a change locally.
+
+**CI** ([ADR 0017](docs/adr/0017-ci-github-actions.md)) calls the same targets:
+lint, pytest and the dbt unit tests (`make ci-dbt`, with a Slim CI impact report)
+on every push; on pull requests and `main`, `make ci-integration` starts a fresh
+stack, publishes two business days (one through Airflow) and asserts the result.
+The Connect image is published to `ghcr.io/ziklon/ledger-lakehouse-connect`.
 
 ## Demo walkthrough
 
@@ -219,7 +227,8 @@ Local object store: [0003](docs/adr/0003-object-store.md).
 | Closed days immutable | planner refuses older batches; committed tags never moved | refusal message on rerun of a closed day |
 | Least privilege | `debezium` (REPLICATION + SELECT), `trino_reader` (SELECT only) | `DELETE` through Trino's `ledger_pg` → permission denied |
 | Portability to AWS | endpoints, catalog type, Kafka auth, converters, schedule are config | `.env` / connector `${env:…}` / dbt `env_var()` / `LEDGER_SCHEDULE` |
-| Reproducible builds | every image pinned (index digests), `uv.lock`, dbt `package-lock.yml` | `docker compose config`; `uv sync --frozen` |
+| Reproducible builds | every image pinned (index digests), `uv.lock`, dbt `package-lock.yml`, CI actions pinned by SHA | `docker compose config`; `uv sync --frozen` |
+| Every change checked before `main` | GitHub Actions: lint, pytest, dbt unit tests on every push; fresh-stack integration (two days, assertions) on PRs | the workflow's runs; [ADR 0017](docs/adr/0017-ci-github-actions.md) |
 | Operability | runbooks; `make cdc-status`; failure callback (stub) | [connector down](docs/runbooks/connector-down.md), [slot lag](docs/runbooks/replication-slot-lag.md), [invariant failure](docs/runbooks/invariant-failure.md) |
 
 ## Repository layout
@@ -231,8 +240,10 @@ generator/      ledger_gen: deterministic traffic generator (pure planner + I/O 
 pipeline/       ledger_pipeline: windows, gate, control.batches, EOD tags, steps
 dbt/            staging -> silver -> gold, macros, tests (invariants, unit tests)
 airflow/dags/   ledger_daily (thin: calls ledger_pipeline.steps + Cosmos)
-scripts/        bootstrap, demo, demo-report, airflow-run, cdc-status, smoke
-docs/adr/       16 decision records (MADR)       docs/runbooks/   3 runbooks
+scripts/        bootstrap, demo, demo-report, airflow-run, cdc-status, smoke, ci-*
+.github/        CI workflow (ADR 0017)
+docs/adr/       17 decision records (MADR)       docs/runbooks/   3 runbooks
+docs/design/    explainers for the hard parts, with evidence
 ```
 
 ## Roadmap
@@ -241,8 +252,8 @@ docs/adr/       16 decision records (MADR)       docs/runbooks/   3 runbooks
 reconciliation at the batch watermark (Trino federation, `control.reconciliation`),
 month-end close and SCD2 history, schema-evolution scenarios
 (`make scenario NAME=…`), ODCS data contracts, dead-letter queue + quarantine,
-Trino access control with masks and row filters, CI on GitHub Actions (lint, dbt
-Slim CI, contracts, integration + invariant tests), retention (snapshot expiry,
+Trino access control with masks and row filters, CI on GitHub Actions (done:
+lint, dbt Slim CI, integration + invariant tests; contracts come with them), retention (snapshot expiry,
 orphan files), intraday provisional runs, `make backfill`.
 
 **Phase 3: AWS, operated like production.** Hybrid: managed services for the

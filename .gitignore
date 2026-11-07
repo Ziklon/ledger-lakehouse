@@ -24,3 +24,6 @@ airflow/logs/
 
 # local tool scratch
 .lavish/
+
+# CI
+ci-logs/

@@ -5,7 +5,7 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 TRINO   := $(COMPOSE) exec -T trino trino --output-format=ALIGNED
 
-.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic run-day airflow-run demo batches test lint
+.PHONY: help env-check up bootstrap down ps logs cdc-status trino smoke clean seed traffic run-day airflow-run demo batches test lint ci-dbt ci-integration
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
@@ -61,7 +61,13 @@ traffic: ## One business day of traffic  DATE=YYYY-MM-DD [PACE=seconds SEED=]
 # --- publication ---------------------------------------------------------------
 PIPE := uv run --env-file .env ledger-pipeline
 
-run-day: ## Publish one business day  DATE=YYYY-MM-DD [CUTOFF=now|ISO]
+# dbt packages (dbt_utils): installed on first use, reinstalled when the lock changes.
+# A fresh clone has none; `make run-day`/`make test` used to rely on a past `dbt deps`.
+dbt/dbt_packages/.installed: dbt/packages.yml dbt/package-lock.yml
+	cd dbt && DBT_PROFILES_DIR=. uv run --env-file ../.env dbt deps
+	touch $@
+
+run-day: dbt/dbt_packages/.installed ## Publish one business day  DATE=YYYY-MM-DD [CUTOFF=now|ISO]
 	@test -n "$(DATE)" || { echo "usage: make run-day DATE=2026-01-02 [CUTOFF=now]"; exit 1; }
 	$(PIPE) run-day --batch-id $(DATE) $(if $(CUTOFF),--cutoff $(CUTOFF))
 
@@ -76,10 +82,17 @@ batches: ## Show control.batches
 	@$(TRINO) --execute "select batch_id, status, window_start, window_end, watermark_lsn, prev_batch_id, committed_at from lakehouse.control.batches order by batch_id"
 
 # --- quality -------------------------------------------------------------------
-test: ## pytest (generator, pipeline) + dbt unit tests (needs the stack: make up)
+test: dbt/dbt_packages/.installed ## pytest (generator, pipeline) + dbt unit tests (needs the stack: make up)
 	uv run pytest -q
 	cd dbt && DBT_PROFILES_DIR=. uv run --env-file ../.env dbt test --select test_type:unit
 
 lint: ## ruff (Python) + sqlfluff (SQL, trino dialect; offline)
 	uv run ruff check . && uv run ruff format --check .
 	uv run sqlfluff lint dbt/models dbt/tests infra/lakehouse
+
+# --- CI (.github/workflows/ci.yml calls these; runnable locally) -----------------
+ci-dbt: ## dbt job: bronze DDL, staging+silver built empty, unit tests [SLIM_CI_BASE=<base checkout>]
+	./scripts/ci-dbt.sh
+
+ci-integration: ## Fresh-stack end-to-end test with ASSERTIONS (2 days, run-day + Airflow); run after `make clean`
+	./scripts/ci-integration.sh

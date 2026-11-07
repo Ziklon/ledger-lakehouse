@@ -18,6 +18,7 @@ Publishes reconciled daily FULL and INCREMENTAL datasets.
 | `make batches` | show `control.batches` |
 | `make test` | pytest (generator, pipeline) + dbt unit tests (needs the stack) |
 | `make lint` | ruff + sqlfluff (trino, jinja templater, offline) |
+| `make ci-dbt` / `make ci-integration` | CI jobs (ADR 0017); refuse the live project (`scripts/ci-guard.sh`): CI only, or a throwaway copy |
 | `make smoke` | end-to-end Trino → REST catalog → S3 round trip |
 | `make ps` / `make logs S=<svc>` | status / logs |
 | `make down` | stop, keep data |
@@ -99,4 +100,15 @@ connector status, test output). Healthy ≠ correct: prove behavior (e.g. `make 
   outer transaction. The generator connects with autocommit=True.
 - Sink regex subscription finds new topics only on metadata refresh (override set to 10s).
 - Iceberg sink runtime isn't on Maven Central; built from ASF source in
-  `infra/connect/Dockerfile` (~7 min cold, cached afterwards).
+  `infra/connect/Dockerfile` (~7 min cold, cached afterwards). CI pushes it to
+  `ghcr.io/ziklon/ledger-lakehouse-connect` (public, registry build cache).
+- CI (ADR 0017): GitHub Actions pinned by commit SHA (tag in a comment). dbt unit tests
+  need their input relations to exist (CI builds staging + silver with `--empty`);
+  gold can't be built `--empty` (Trino rejects `FOR VERSION AS OF` on dbt's `limit 0`
+  subquery), so gold is covered by `make ci-integration`.
+- The compose project comes from `COMPOSE_PROJECT_NAME` in `.env` (= `ledger-lakehouse`),
+  and scripts `source .env`: a copy of the repo with a *prepended* name still targets the
+  live stack. Edit the existing line, and check `docker compose config` before running.
+- A REST catalog / MinIO restart under a running sink kills its coordinator (task FAILED,
+  never auto-restarted): restart `POST /connectors/bronze-sink/tasks/0/restart`, then check
+  `_kafka_offset` is distinct and contiguous.
