@@ -1,5 +1,7 @@
 # Ledger Lakehouse
 
+[![ci](https://github.com/Ziklon/ledger-lakehouse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ziklon/ledger-lakehouse/actions/workflows/ci.yml)
+
 **A CDC-to-Iceberg finance data platform that publishes reconciled daily FULL
 and INCREMENTAL datasets.**
 
@@ -92,7 +94,13 @@ make trino                                # SQL shell (lakehouse catalog)
 
 `make run-day DATE=… CUTOFF=now` runs the same steps without Airflow (same
 functions). `make test` (pytest + dbt unit tests) and `make lint` (ruff +
-sqlfluff) are what CI runs.
+sqlfluff) check a change locally.
+
+**CI** ([ADR 0017](docs/adr/0017-ci-github-actions.md)) calls the same targets:
+lint, pytest and the dbt unit tests (`make ci-dbt`, with a Slim CI impact report)
+on every push; on pull requests and `main`, `make ci-integration` starts a fresh
+stack, publishes two business days (one through Airflow) and asserts the result.
+The Connect image is published to `ghcr.io/ziklon/ledger-lakehouse-connect`.
 
 ## Demo walkthrough
 
@@ -194,7 +202,7 @@ publishes nothing, because gold hashes only the columns it publishes.
 | Affected-keys **recompute** of balances | delta arithmetic | self-correcting; output changes ≠ input changes | [0007](docs/adr/0007-affected-keys-recompute-for-aggregates.md) |
 | Net daily changes | every change event | the FULL + INC equation is exact and checkable | [0009](docs/adr/0009-net-daily-changes-vs-every-change.md) |
 | FULL as tags **and** partitions | either alone | tags freeze the input (rerun-safe); partitions serve any engine | [0011](docs/adr/0011-daily-full-as-tags-and-partitions.md) |
-| Cut-off 00:00 UTC + two-part completeness gate | wait a fixed delay | provable completeness, works on idle days | [0010](docs/adr/0010-cutoff-timezone-and-completeness-gate.md) |
+| Cut-off 00:00 UTC + three-part completeness gate | wait a fixed delay | provable completeness, works on idle days | [0010](docs/adr/0010-cutoff-timezone-and-completeness-gate.md) |
 | Control table | Write-Audit-Publish branches | multi-table publication, engine-agnostic, audit trail | [0012](docs/adr/0012-control-table-vs-write-audit-publish.md) |
 | Airflow 3 + Cosmos, batch identity from the pipeline | Dagster; dbt `invocation_id` | per-model tasks and tests; one batch identity for ~20 dbt invocations | [0014](docs/adr/0014-airflow-cosmos-and-batch-identity.md) |
 | dbt-trino | Spark | set-based SQL on small daily deltas; Trino is needed anyway | [0015](docs/adr/0015-dbt-trino-vs-spark.md) |
@@ -207,11 +215,11 @@ Local object store: [0003](docs/adr/0003-object-store.md).
 
 | Concern | Implementation | Evidence |
 |---|---|---|
-| Exactly-once into bronze | Iceberg sink coordinator commits data + offsets together | Connect SIGKILLed mid-traffic: 254 = 254 entries, distinct `(pk, _lsn)` (milestone b) |
+| Exactly-once into bronze | Iceberg sink: worker commits file list + source offsets in one Kafka transaction; coordinator's Iceberg commit is idempotent (keyed by control-topic offsets) | Connect SIGKILLed mid-traffic: 254 = 254 entries, distinct `(pk, _lsn)` (milestone b) |
 | Delete events without before-images | key-only deletes; row-level carry-forward; skip create+delete in window | unit tests incl. default-filled delete payload (`customer_id=0`), mutation-tested |
 | Idempotent, rerun-safe batches | windows from `control.batches`; EOD tags; partition overwrite; LSN guard | rerun → identical checksums, tags unchanged; rerun of an older window merges 0 rows |
 | No silent gaps or overlaps | window_start = last COMMITTED window_end; ms-aligned boundaries; missed days caught up | unit tests; contiguity query over all batches |
-| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
+| Completeness before publishing | heartbeat ≥ cut-off in bronze + sink offsets ≥ snapshot + every partition's last offset present in its bronze table (`_kafka_offset`) | sink paused: no batch opened; resume → same run COMMITTED with the whole backlog |
 | Consistent outputs | FULL and INCREMENTAL from the same tag; invariant step before COMMITTED | `FULL(N-1)+INC(N)=FULL(N)` every demo day (rows + checksum) |
 | Ledger correctness | double entry + independent recompute from bronze | each invariant shown to FAIL on corrupted data |
 | Failure containment | failed step → batch stays RUNNING, consumers keep the previous day, no Asset events, newer batches refused | rehearsed: one-legged transaction → fix → rerun → COMMITTED |
@@ -219,7 +227,8 @@ Local object store: [0003](docs/adr/0003-object-store.md).
 | Closed days immutable | planner refuses older batches; committed tags never moved | refusal message on rerun of a closed day |
 | Least privilege | `debezium` (REPLICATION + SELECT), `trino_reader` (SELECT only) | `DELETE` through Trino's `ledger_pg` → permission denied |
 | Portability to AWS | endpoints, catalog type, Kafka auth, converters, schedule are config | `.env` / connector `${env:…}` / dbt `env_var()` / `LEDGER_SCHEDULE` |
-| Reproducible builds | every image pinned (index digests), `uv.lock`, dbt `package-lock.yml` | `docker compose config`; `uv sync --frozen` |
+| Reproducible builds | every image pinned (index digests), `uv.lock`, dbt `package-lock.yml`, CI actions pinned by SHA | `docker compose config`; `uv sync --frozen` |
+| Every change checked before `main` | GitHub Actions: lint, pytest, dbt unit tests on every push; fresh-stack integration (two days, assertions) on PRs | the workflow's runs; [ADR 0017](docs/adr/0017-ci-github-actions.md) |
 | Operability | runbooks; `make cdc-status`; failure callback (stub) | [connector down](docs/runbooks/connector-down.md), [slot lag](docs/runbooks/replication-slot-lag.md), [invariant failure](docs/runbooks/invariant-failure.md) |
 
 ## Repository layout
@@ -231,8 +240,10 @@ generator/      ledger_gen: deterministic traffic generator (pure planner + I/O 
 pipeline/       ledger_pipeline: windows, gate, control.batches, EOD tags, steps
 dbt/            staging -> silver -> gold, macros, tests (invariants, unit tests)
 airflow/dags/   ledger_daily (thin: calls ledger_pipeline.steps + Cosmos)
-scripts/        bootstrap, demo, demo-report, airflow-run, cdc-status, smoke
-docs/adr/       16 decision records (MADR)       docs/runbooks/   3 runbooks
+scripts/        bootstrap, demo, demo-report, airflow-run, cdc-status, smoke, ci-*
+.github/        CI workflow (ADR 0017)
+docs/adr/       17 decision records (MADR)       docs/runbooks/   3 runbooks
+docs/design/    explainers for the hard parts, with evidence
 ```
 
 ## Roadmap
@@ -241,8 +252,8 @@ docs/adr/       16 decision records (MADR)       docs/runbooks/   3 runbooks
 reconciliation at the batch watermark (Trino federation, `control.reconciliation`),
 month-end close and SCD2 history, schema-evolution scenarios
 (`make scenario NAME=…`), ODCS data contracts, dead-letter queue + quarantine,
-Trino access control with masks and row filters, CI on GitHub Actions (lint, dbt
-Slim CI, contracts, integration + invariant tests), retention (snapshot expiry,
+Trino access control with masks and row filters, CI on GitHub Actions (done:
+lint, dbt Slim CI, integration + invariant tests; contracts come with them), retention (snapshot expiry,
 orphan files), intraday provisional runs, `make backfill`.
 
 **Phase 3: AWS, operated like production.** Hybrid: managed services for the

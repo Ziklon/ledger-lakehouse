@@ -4,6 +4,7 @@
 #   2. Bronze DDL (typed contract) -- BEFORE the sink starts, otherwise the
 #      sink would auto-create tables with inferred (varchar) timestamp types
 #   3. Connectors via PUT /connectors/<name>/config (upsert): source, then sink
+#   5. Offset baseline: migration boundary of bronze _kafka_offset (ADR 0010)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; source .env; set +a
@@ -50,4 +51,7 @@ for name in ledger-source bronze-sink; do
   echo "${name}: ${state}"
   [[ "$state" == RUNNING ]] || exit 1
 done
+
+echo "== 5. Offset baseline (migration of bronze _kafka_offset; no-op on a fresh stack) =="
+uv run --env-file .env ledger-pipeline record-offset-baseline
 echo "BOOTSTRAP OK"

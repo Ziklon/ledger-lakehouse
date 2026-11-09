@@ -29,3 +29,18 @@ CREATE TABLE IF NOT EXISTS lakehouse.control.batches (
     committed_at        timestamp(6) with time zone
 )
 WITH (format_version = 2);
+
+-- Migration boundary of bronze _kafka_partition/_kafka_offset (docs/adr/0010).
+-- One row per CDC partition whose bronze table already held rows when the columns
+-- were added: from first_offset on, every bronze row carries its Kafka offset.
+-- Writer: `ledger-pipeline record-offset-baseline` (scripts/bootstrap.sh), insert-only.
+-- Reader: the completeness gate. A partition whose last record is below
+-- first_offset (no event since the migration) can't be checked by offset and
+-- uses the heartbeat-LSN fallback; every other partition is checked exactly.
+CREATE TABLE IF NOT EXISTS lakehouse.control.bronze_offset_baseline (
+    topic               varchar,
+    kafka_partition     integer,
+    first_offset        bigint,
+    recorded_at         timestamp(6) with time zone
+)
+WITH (format_version = 2);
